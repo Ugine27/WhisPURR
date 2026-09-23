@@ -69,6 +69,8 @@ export default function MainStylesView({
 }: MainStylesViewProps) {
   const [showAdaptInfo, setShowAdaptInfo] = useState(false);
   const adaptInfoRef = useRef<HTMLDivElement>(null);
+  const [sliderValues, setSliderValues] = useState<Record<string, number>>({});
+  
 
   useEffect(() => {
     if (!showAdaptInfo) return;
@@ -170,6 +172,7 @@ export default function MainStylesView({
             </button>
           )}
 
+
           {/* Auto-Adapt Toggle Bar */}
           <div className="flex items-center gap-2 bg-white/10 border border-white/20 py-1.5 px-3 rounded-xl shrink-0 relative">
             <span className="text-xs font-bold text-white">
@@ -225,13 +228,10 @@ export default function MainStylesView({
       </div>
 
       {/* Main 2-Column Work Area */}
-      <div className="flex-1 min-h-0 flex gap-4 overflow-hidden">
-        {/* 2. Left Column: Active Personas list */}
-        <div className="w-48 md:w-52 shrink-0 flex flex-col h-full overflow-hidden">
-          <div className="text-xs font-bold uppercase tracking-wider text-[#5d4037] px-2 mb-2">
-            Active Personas
-          </div>
-          <div className="flex flex-col gap-1.5 overflow-y-auto pr-1">
+      <div className="flex-1 min-h-0 flex gap-4 overflow-hidden px-4">
+        {/* Left Column: Personas list */}
+        <div className="w-1/3 shrink-0 flex flex-col h-full overflow-hidden mt-4">
+          <div className="flex flex-col gap-3 overflow-y-auto pr-2 pb-10">
             {CONTEXT_ITEMS.map(({ name, icon: Icon }) => {
               const isActive = activeStyleName === name;
               const apps = contextApps[name] || DEFAULT_CONTEXT_APPS[name] || [];
@@ -240,29 +240,29 @@ export default function MainStylesView({
                   key={name}
                   type="button"
                   onClick={() => onSelectActiveStyle(name)}
-                  className={`group relative flex items-center justify-between p-2.5 px-3 rounded-xl border transition-all text-left cursor-pointer ${
+                  className={`group relative flex items-center justify-between p-4 px-5 rounded-2xl border transition-all text-left cursor-pointer ${
                     isActive 
-                      ? 'bg-[#5d4037] text-white border-[#3e2723] shadow-sm' 
+                      ? 'bg-[#5d4037] text-white border-[#3e2723] shadow-md' 
                       : 'bg-transparent border-transparent text-[#5d4037] hover:bg-[#5d4037]/10 hover:text-[#2b170e]'
                   }`}
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className={`p-1.5 rounded-lg transition-colors shrink-0 ${
+                  <div className="flex items-center gap-4 min-w-0">
+                    <div className={`p-3 rounded-xl transition-colors shrink-0 ${
                       isActive ? 'bg-[#795548] text-[#ffffff]' : 'bg-[#5d4037]/10 text-[#5d4037] group-hover:text-[#2b170e]'
                     }`}>
-                      <Icon className="w-4 h-4" />
+                      <Icon className="w-6 h-6" />
                     </div>
                     <div className="min-w-0 flex flex-col">
-                      <span className={`text-sm tracking-tight truncate ${isActive ? 'text-[#ffffff] font-bold' : 'text-[#3e2723] font-semibold'}`}>
+                      <span className={`text-xl tracking-tight truncate ${isActive ? 'text-[#ffffff] font-bold' : 'text-[#3e2723] font-semibold'}`}>
                         {name}
                       </span>
-                      <span className={`text-[11px] truncate font-medium ${isActive ? 'text-[#fceee2]' : 'text-[#6d4c41]'}`}>
+                      <span className={`text-sm truncate font-medium ${isActive ? 'text-[#fceee2]' : 'text-[#6d4c41]'}`}>
                         {apps.length} {apps.length === 1 ? 'app' : 'apps'}
                       </span>
                     </div>
                   </div>
                   {isActive && (
-                    <div className="w-1.5 h-4 rounded-full bg-orange-400 shrink-0" />
+                    <div className="w-2 h-6 rounded-full bg-orange-400 shrink-0" />
                   )}
                 </button>
               );
@@ -271,14 +271,14 @@ export default function MainStylesView({
         </div>
 
         {/* Right Column: Warm Roasted Espresso Panel (.context-studio-panel) */}
-        <div className="context-studio-panel flex-1 min-h-0 h-full flex flex-col rounded-3xl p-5 md:p-6 shadow-xl overflow-y-auto custom-scrollbar border">
+        <div className="context-studio-panel flex-1 min-h-0 h-full flex flex-col rounded-3xl p-5 md:p-6 shadow-xl overflow-y-auto custom-scrollbar border mt-4">
           <AnimatePresence mode="wait">
             <motion.div 
               key={activeStyleName}
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -5 }}
-              transition={{ duration: 0.15, ease: "easeOut" }}
+              initial={{ opacity: 0, x: 10 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -10 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
               className="flex flex-col h-full w-full min-h-0 gap-5"
             >
               {/* Context Header & Active Apps Strip */}
@@ -336,6 +336,9 @@ export default function MainStylesView({
               {/* Context Options Body: Output Cards & Custom Rules */}
               <ContextOptionsRenderer 
                 activeStyleName={activeStyleName} 
+                sliderValue={sliderValues[activeStyleName] ?? 50}
+                onSliderChange={(val: number) => setSliderValues(prev => ({...prev, [activeStyleName]: val}))}
+                
               />
             </motion.div>
           </AnimatePresence>
@@ -381,41 +384,75 @@ const CONTEXT_PLACEHOLDERS: Record<string, string> = {
 
 interface ContextOptionsRendererProps {
   activeStyleName: string;
+  sliderValue: number;
+  onSliderChange: (val: number) => void;
 }
 
 function ContextOptionsRenderer({ 
-  activeStyleName 
+  activeStyleName,
+  sliderValue,
+  onSliderChange
 }: ContextOptionsRendererProps) {
   const contextModes: Record<string, {n: string, d: string, ex: string}[]> = {
     "Formal": [
-      { n: 'Clear', d: 'Clean sentences with natural professional cadence.', ex: 'Please take a look at this.' },
+      { n: 'Very Casual', d: 'Informal check-in.', ex: 'Hey, take a look at this.' },
       { n: 'Casual', d: 'Conversational workplace shorthand.', ex: 'Can you check this out?' },
-      { n: 'Formal', d: 'Fully composed, executive-ready phrasing.', ex: 'I kindly request that you review this material.' }
+      { n: 'Clear', d: 'Clean sentences with natural professional cadence.', ex: 'Please take a look at this.' },
+      { n: 'Formal', d: 'Fully composed, executive-ready phrasing.', ex: 'I kindly request that you review this material.' },
+      { n: 'Highly Formal', d: 'Executive-ready phrasing.', ex: 'It is highly requested that the material is reviewed at your earliest convenience.' }
     ],
     "Casual": [
-      { n: 'Natural', d: 'Light cleanup, preserving your spoken voice.', ex: 'I am going to be a bit late.' },
       { n: 'Very Casual', d: 'Lowercase, relaxed shorthand, zero fuss.', ex: 'running late' },
-      { n: 'Polished', d: 'Full punctuation and natural conversational grammar.', ex: 'I will be arriving slightly later than expected.' }
+      { n: 'Casual', d: 'Light cleanup, preserving your spoken voice.', ex: 'I am going to be a bit late.' },
+      { n: 'Natural', d: 'Friendly, natural conversational grammar.', ex: 'I will be arriving slightly later than expected.' },
+      { n: 'Clear', d: 'Punctuation and conversational grammar.', ex: 'I will be arriving slightly later.' },
+      { n: 'Polished', d: 'Full punctuation and composed.', ex: 'I will be arriving slightly later than originally planned.' }
     ],
     "Developer": [
-      { n: 'Clear', d: 'Plain instruction with exact technical intent.', ex: 'Fix the bug in the authentication module.' },
+      { n: 'Very Concise', d: 'Minimal code snippet.', ex: 'fix auth bug' },
       { n: 'Concise', d: 'Brief summary stripped of conversational filler.', ex: 'Fix auth module bug.' },
-      { n: 'Structured', d: 'Standard ticket format with goal and impact.', ex: 'Task: Resolve auth bug.\nImpact: Critical.' }
+      { n: 'Clear', d: 'Plain instruction with exact technical intent.', ex: 'Fix the bug in the authentication module.' },
+      { n: 'Structured', d: 'Standard ticket format with goal and impact.', ex: 'Task: Resolve auth bug.\nImpact: Critical.' },
+      { n: 'Detailed', d: 'Comprehensive technical writeup.', ex: 'Task: Resolve auth bug.\nImpact: Critical.\nDetails: Investigate OAuth flow.' }
     ],
     "Prompts": [
+      { n: 'Very Direct', d: 'Minimal prompt.', ex: 'python csv script' },
       { n: 'Direct', d: 'Direct instruction with immediate task parameters.', ex: 'Write a Python script for CSV parsing.' },
+      { n: 'Clear', d: 'Clear system persona and reasoning.', ex: 'Act as a Senior Engineer and write a Python script.' },
       { n: 'Detailed', d: 'Exhaustive parameters, edge cases, and type hints.', ex: 'Write a robust Python script using type hints and error handling.' },
       { n: 'Role-Based', d: 'Clear system persona and structured reasoning.', ex: 'Act as a Principal Engineer and review this architecture.' }
     ],
     "Other apps": [
-      { n: 'Balanced', d: 'Cleaned grammar with your personal tone preserved.', ex: 'Yeah, that sounds good to me.' },
       { n: 'Minimal', d: 'Compressed down to key words and fragments.', ex: 'Sounds good.' },
-      { n: 'Polished', d: 'Composed, complete sentences ready to publish.', ex: 'That sounds perfectly fine with me.' }
+      { n: 'Casual', d: 'Cleaned grammar with your personal tone preserved.', ex: 'Yeah, that sounds good to me.' },
+      { n: 'Balanced', d: 'Cleaned grammar with your personal tone preserved.', ex: 'Yeah, that sounds good.' },
+      { n: 'Clear', d: 'Composed, complete sentences ready to publish.', ex: 'That sounds perfectly fine with me.' },
+      { n: 'Polished', d: 'Composed, complete sentences ready to publish.', ex: 'That sounds perfectly fine.' }
     ]
   };
 
-  const currentModes = contextModes[activeStyleName] || contextModes["Other apps"];
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const INPUT_EXAMPLES: Record<string, string> = {
+    "Formal": "Can you check this out?",
+    "Casual": "I am running late",
+    "Developer": "fix auth bug",
+    "Prompts": "python script for csv",
+    "Other apps": "yeah sounds good to me"
+  };
+
+  const INTENSITY_TITLES: Record<string, string> = {
+    "Formal": "How formal do you want it to be?",
+    "Casual": "How casual do you want it to be?",
+    "Developer": "How concise do you want the code?",
+    "Prompts": "How strict should the prompt be?",
+    "Other apps": "How polished do you want it?"
+  };
+
+  const currentAdvancedModes = contextModes[activeStyleName] || contextModes["Other apps"];
+  const optIndex = sliderValue / 25;
+  const opt = currentAdvancedModes[optIndex] || currentAdvancedModes[currentAdvancedModes.length - 1];
+
+  const inputExample = INPUT_EXAMPLES[activeStyleName] || "Test input...";
+  const intensityTitle = INTENSITY_TITLES[activeStyleName] || "Select tone intensity";
 
   const [customRules, setCustomRules] = useState<Record<string, string>>(() => {
     try {
@@ -448,7 +485,7 @@ function ContextOptionsRenderer({
     let updated = '';
     if (trimmed.toLowerCase().includes(chip.toLowerCase())) {
       updated = trimmed
-        .replace(new RegExp(`(^|\\.\\s*)${chip}(\\.\\s*|$)`, 'gi'), '')
+        .replace(new RegExp(`(^|\.\s*)${chip}(\.\s*|$)`, 'gi'), '')
         .trim();
     } else {
       updated = trimmed ? `${trimmed}${trimmed.endsWith('.') ? '' : '.'} ${chip}.` : `${chip}.`;
@@ -457,65 +494,75 @@ function ContextOptionsRenderer({
   };
 
   return (
-    <div className="flex flex-col w-full h-full min-h-0 select-text gap-4">
-      {/* 3. Output Examples — Visual Focus */}
-      <div className="flex flex-col gap-2 shrink-0">
+    <div className="flex flex-col w-full h-full min-h-0 select-text gap-6">
+      
+      {/* Input Example */}
+      <div className="flex flex-col gap-1.5 shrink-0 bg-[#251610] border border-[#5e3b2c] p-3 rounded-2xl shadow-inner">
+        <span className="text-xs font-bold uppercase tracking-wider text-title-cream">
+          You say
+        </span>
+        <p className="text-sm leading-relaxed text-[#fceee2] italic">
+          "{inputExample}"
+        </p>
+      </div>
+
+      {/* Slider Section */}
+      <div className="flex flex-col gap-3 shrink-0">
         <div className="flex items-center justify-between">
           <span className="text-xs font-bold uppercase tracking-wider text-title-cream">
-            Output Tone
-          </span>
-          <span className="text-xs text-desc-beige font-normal">
-            Select how your speech is shaped.
+            {intensityTitle}
           </span>
         </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full">
-          {currentModes.map((opt, i) => {
-            const isSelected = selectedIndex === i;
-            return (
-              <div 
-                key={i}
-                onClick={() => setSelectedIndex(i)}
-                className={`relative rounded-2xl p-3.5 cursor-pointer transition-all flex flex-col justify-between gap-2.5 ${
-                  isSelected
-                    ? 'bg-[#4a2c20] border-2 border-orange-400 shadow-md ring-2 ring-orange-400/30' 
-                    : 'bg-[#251610] border border-[#5e3b2c] hover:border-[#8d5e48] hover:bg-[#2b1912] shadow-xs'
-                }`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h3 className={`text-sm font-bold tracking-tight ${isSelected ? 'text-[#ffffff]' : 'text-title-cream'}`}>
-                      {opt.n}
-                    </h3>
-                    <p className={`text-xs font-normal leading-normal mt-0.5 ${isSelected ? 'text-[#fceee2]' : 'text-desc-beige'}`}>
-                      {opt.d}
-                    </p>
-                  </div>
-                  <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 mt-0.5 transition-colors ${
-                    isSelected 
-                      ? 'bg-orange-500 text-[#ffffff] shadow-xs' 
-                      : 'border border-[#7d5340] bg-[#1a0e0a]/50 text-transparent'
-                  }`}>
-                    <Check size={11} strokeWidth={3} className={isSelected ? 'opacity-100 text-[#ffffff]' : 'opacity-0'} />
-                  </div>
-                </div>
-
-                <div className={`rounded-xl p-2.5 px-3 flex items-center transition-colors border ${
-                  isSelected 
-                    ? 'bg-[#1c0f0a] border-orange-400/50' 
-                    : 'bg-[#1a0e0a] border-[#4d2f22]/70'
-                }`}>
-                  <p className={`text-xs leading-relaxed truncate ${isSelected ? 'text-[#ffffff] font-medium' : 'text-quote-sample font-normal'}`}>
-                    "{opt.ex}"
-                  </p>
-                </div>
-              </div>
-            );
-          })}
+        <div className="w-full flex flex-col justify-center gap-2">
+          <div className="flex justify-between text-[11px] font-bold text-[#fceee2] px-1 uppercase tracking-wider">
+            <span>0%</span>
+            <span>25%</span>
+            <span>50%</span>
+            <span>75%</span>
+            <span>100%</span>
+          </div>
+          <input 
+            type="range"
+            min="0"
+            max="100"
+            step="25"
+            value={sliderValue}
+            onChange={(e) => onSliderChange(parseInt(e.target.value))}
+            className="w-full cursor-pointer h-2 rounded-lg appearance-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:bg-orange-400 [&::-webkit-slider-thumb]:rounded-full shadow-inner border border-black/30"
+            style={{
+              background: `linear-gradient(to right, #fceee2 ${sliderValue}%, rgba(93, 64, 55, 0.4) ${sliderValue}%)`
+            }}
+          />
         </div>
       </div>
 
-      {/* 4. Custom Rules Section */}
+      {/* Output Example */}
+      <div className="flex flex-col gap-2 shrink-0">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold uppercase tracking-wider text-title-cream">
+            WhisPURR types
+          </span>
+        </div>
+        <div className={`relative rounded-2xl p-4 bg-[#4a2c20] border-2 border-orange-400 shadow-md ring-2 ring-orange-400/30 flex flex-col justify-between gap-3`}>
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <h3 className="text-base font-bold tracking-tight text-[#ffffff]">
+                {opt.n}
+              </h3>
+              <p className="text-sm font-normal leading-normal mt-1 text-[#fceee2]">
+                {opt.d}
+              </p>
+            </div>
+          </div>
+          <div className="rounded-xl p-3 px-4 flex items-center transition-colors border bg-[#1c0f0a] border-orange-400/50">
+            <p className="text-sm leading-relaxed text-[#ffffff] font-medium whitespace-pre-wrap">
+              "{opt.ex}"
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Custom Rules Section */}
       <div className="flex flex-col gap-2 shrink-0">
         <div className="flex items-center justify-between">
           <div>
