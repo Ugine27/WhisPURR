@@ -1,7 +1,17 @@
-import { useState } from 'react';
-import { AnimatePresence } from 'framer-motion';
-import MeetStylesIntro from './MeetStylesIntro';
-import MainStylesView from './MainStylesView';
+import { lazy, Suspense, useState } from 'react';
+import KiviWorld from './KiviWorld';
+
+// The 3D world pulls in three.js, so load it only when the Persona page opens.
+const KiviWorld3D = lazy(() => import('../world3d/KiviWorld3D'));
+
+const supportsWebGL = (() => {
+  try {
+    const canvas = document.createElement('canvas');
+    return !!(canvas.getContext('webgl2') || canvas.getContext('webgl'));
+  } catch (e) {
+    return false;
+  }
+})();
 
 interface StylesManagerProps {
   currentMode: string;
@@ -20,9 +30,6 @@ export default function StylesManager({
   isAdaptiveMode: propIsAdaptiveMode,
   onToggleAdaptive: propOnToggleAdaptive
 }: StylesManagerProps) {
-  // Current sub-view: defaults to 'main' so the user sees the Styles page & Adaptive Mode immediately
-  const [viewMode, setViewMode] = useState<'intro' | 'main'>('main');
-
   // Adaptive mode local sync
   const [internalAdaptiveMode, setInternalAdaptiveMode] = useState<boolean>(() => {
     try {
@@ -61,37 +68,22 @@ export default function StylesManager({
     } catch (e) {}
   };
 
-  const handleCompleteIntro = () => {
-    try {
-      localStorage.setItem('whispurr_seen_styles_onboarding', 'true');
-    } catch (e) {}
-    setViewMode('main');
+  const worldProps = {
+    activeStyleName,
+    onSelectActiveStyle: handleSelectActiveStyle,
+    isAdaptiveMode: effectiveAdaptiveMode,
+    onToggleAdaptive: handleToggleAdaptive,
   };
 
   return (
     <div className="w-full h-full flex flex-col relative overflow-hidden">
-      <AnimatePresence mode="wait">
-        {viewMode === 'intro' && (
-          <MeetStylesIntro
-            key="intro"
-            onProceed={handleCompleteIntro}
-            onSkip={handleCompleteIntro}
-          />
-        )}
-
-        {viewMode === 'main' && (
-          <MainStylesView
-            key="main"
-            activeStyleName={activeStyleName}
-            onSelectActiveStyle={handleSelectActiveStyle}
-            isAdaptiveMode={effectiveAdaptiveMode}
-            onToggleAdaptive={handleToggleAdaptive}
-            onRevisitIntro={() => setViewMode('intro')}
-          />
-        )}
-      </AnimatePresence>
+      {supportsWebGL ? (
+        <Suspense fallback={<div className="w-full h-full rounded-3xl bg-[#f7dcc0]" />}>
+          <KiviWorld3D {...worldProps} />
+        </Suspense>
+      ) : (
+        <KiviWorld {...worldProps} />
+      )}
     </div>
   );
 }
-
-
