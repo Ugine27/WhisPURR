@@ -15,7 +15,7 @@ const NECK = new THREE.Vector3(0, 1.12, 0.02);
 
 export type Outfit = 'none' | 'suit' | 'casual' | 'dev';
 export type Pose = 'stand' | 'sit';
-export type Activity = 'none' | 'type' | 'sip' | 'watch' | 'beckon';
+export type Activity = 'none' | 'type' | 'sip' | 'watch' | 'beckon' | 'fly';
 
 interface Kiwi3DProps {
   outfit: Outfit;
@@ -282,60 +282,88 @@ function knitTexture() {
 }
 
 function BodyPieces({ outfit }: { outfit: Outfit }) {
-  const gap = 0.62; // the jacket's open front
   switch (outfit) {
-    case 'suit':
+    case 'suit': {
+      // Grey three-piece: white shirt, green tie, waistcoat, open jacket.
+      const gap = 0.78;
       return (
         <>
           <Drape beat={0}>
-            <Garment color="#f6f3ec" sheen="#ffffff" theta={[0.27, 0.72]} phi={[FRONT - 0.42, 0.84]} r={G_R - 0.012} />
-            <Garment color="#2c3a50" sheen="#6d7fa3" theta={[0.28, 0.84]} phi={[FRONT + gap / 2, Math.PI * 2 - gap]} />
+            <Garment color="#f5f3ee" sheen="#ffffff" theta={[0.27, 0.55]} phi={[FRONT - 0.34, 0.68]} r={G_R - 0.016} />
+            <Garment color="#6f7479" sheen="#b4b9bf" theta={[0.36, 0.8]} phi={[FRONT - 0.5, 1.0]} r={G_R - 0.008} />
+            <Garment color="#8e9398" sheen="#cfd4da" theta={[0.28, 0.84]} phi={[FRONT + gap / 2, Math.PI * 2 - gap]} />
           </Drape>
           {[-1, 1].map((s) => (
-            <mesh key={s} name="beat:1.5" position={[s * 0.19, 1.0, 0.66]} rotation={[-0.3, s * 0.3, s * 0.42]} castShadow>
+            <mesh key={s} name="beat:1.5" position={[s * 0.21, 1.0, 0.65]} rotation={[-0.3, s * 0.32, s * 0.45]} castShadow>
               <boxGeometry args={[0.1, 0.34, 0.025]} />
-              <Mat color="#24314a" rough={0.6} />
+              <meshPhysicalMaterial color="#7e8388" roughness={0.7} sheen={1} sheenColor="#cfd4da" />
             </mesh>
           ))}
           <mesh name="beat:2" position={[0, 1.06, 0.68]} rotation={[0.25, 0, 0]} castShadow>
             <boxGeometry args={[0.12, 0.09, 0.06]} />
-            <Mat color="#7d2a24" rough={0.5} />
+            <Mat color="#3f6630" rough={0.5} />
           </mesh>
-          <mesh name="beat:2.3" position={[0, 0.86, 0.72]} rotation={[-0.2, 0, 0]} castShadow>
-            <boxGeometry args={[0.11, 0.33, 0.025]} />
-            <meshPhysicalMaterial color="#9b3128" roughness={0.45} sheen={0.6} sheenColor="#d86a5a" />
+          <mesh name="beat:2.3" position={[0, 0.9, 0.715]} rotation={[-0.18, 0, 0]} castShadow>
+            <boxGeometry args={[0.11, 0.26, 0.025]} />
+            <meshPhysicalMaterial color="#4f7a3a" roughness={0.45} sheen={0.6} sheenColor="#9cc07a" />
           </mesh>
+          {[0.78, 0.66].map((y) => (
+            <mesh key={y} name="beat:2.6" position={[0, y, 0.72]}>
+              <sphereGeometry args={[0.018, 10, 10]} />
+              <Mat color="#3b3e42" rough={0.4} />
+            </mesh>
+          ))}
           <mesh name="beat:2.8" position={[0.46, 0.99, 0.47]} rotation={[0, 0.8, 0]}>
             <boxGeometry args={[0.12, 0.07, 0.02]} />
-            <Mat color="#f6f3ec" />
+            <Mat color="#f5f3ee" />
           </mesh>
         </>
       );
+    }
     case 'casual':
+      // A soft, tailored grey hoodie.
       return (
         <>
           <Drape beat={0}>
-            <Garment color="#e4d4ba" sheen="#fff8ea" theta={[0.26, 0.9]} bump={knitTexture()} />
-          </Drape>
-          <mesh name="beat:1.4" position={[0, 1.13, 0.02]} rotation={[Math.PI / 2 - 0.1, 0, 0]} castShadow>
-            <torusGeometry args={[0.52, 0.075, 14, 48]} />
-            <meshPhysicalMaterial color="#d7c5a7" roughness={0.95} sheen={1} sheenColor="#fff8ea" bumpMap={knitTexture()} bumpScale={2} />
-          </mesh>
-        </>
-      );
-    case 'dev':
-      return (
-        <>
-          <Drape beat={0}>
-            <Garment color="#3b4252" sheen="#7c879c" theta={[0.25, 0.92]} />
-            <Garment color="#343a48" sheen="#6b7486" theta={[0.6, 0.78]} phi={[FRONT - 0.5, 1.0]} r={G_R + 0.012} />
+            <Garment color="#9ea3a8" sheen="#dfe3e7" theta={[0.25, 0.92]} />
+            <Garment color="#8f949a" sheen="#d3d7db" theta={[0.6, 0.78]} phi={[FRONT - 0.5, 1.0]} r={G_R + 0.012} />
           </Drape>
           {[-0.1, 0.1].map((x) => (
             <mesh key={x} name="beat:1.8" position={[x, 0.97, 0.73]}>
               <cylinderGeometry args={[0.013, 0.013, 0.26, 8]} />
-              <Mat color="#e8e4dc" />
+              <Mat color="#f1efe9" />
             </mesh>
           ))}
+        </>
+      );
+    case 'dev':
+      // A structured technical vest: zip, chest pockets, a reflective band.
+      return (
+        <>
+          <Drape beat={0}>
+            <Garment color="#2f343c" sheen="#6d7785" theta={[0.3, 0.83]} phi={[FRONT + 0.1, Math.PI * 2 - 0.2]} />
+            <Garment color="#7dd3c0" sheen="#d2fff4" theta={[0.62, 0.65]} phi={[FRONT + 0.1, Math.PI * 2 - 0.2]} r={G_R + 0.004} />
+          </Drape>
+          <mesh name="beat:1.2" position={[0, 0.84, 0.735]} rotation={[-0.1, 0, 0]}>
+            <boxGeometry args={[0.022, 0.52, 0.02]} />
+            <Mat color="#9aa3ad" rough={0.3} />
+          </mesh>
+          {[-1, 1].map((s) => (
+            <group key={s} name="beat:1.8" position={[s * 0.25, 0.98, 0.64]} rotation={[-0.25, s * 0.36, 0]}>
+              <mesh castShadow>
+                <boxGeometry args={[0.18, 0.16, 0.05]} />
+                <Mat color="#262a31" rough={0.8} />
+              </mesh>
+              <mesh position={[0, 0.07, 0.03]}>
+                <boxGeometry args={[0.18, 0.03, 0.02]} />
+                <Mat color="#1d2026" rough={0.8} />
+              </mesh>
+            </group>
+          ))}
+          <mesh name="beat:2.4" position={[-0.25, 1.1, 0.64]}>
+            <sphereGeometry args={[0.016, 10, 10]} />
+            <meshStandardMaterial color="#7dd3c0" emissive="#7dd3c0" emissiveIntensity={2.5} toneMapped={false} />
+          </mesh>
         </>
       );
     default:
@@ -347,43 +375,34 @@ function HeadPieces({ outfit }: { outfit: Outfit }) {
   switch (outfit) {
     case 'casual':
       return (
-        <group position={HEAD.c} rotation={[-0.18, 0, 0.06]}>
-          <mesh name="beat:0" castShadow>
-            <sphereGeometry args={[0.585, 40, 20, 0, Math.PI * 2, 0, Math.PI * 0.42]} />
-            <meshStandardMaterial color="#d6a443" roughness={1} side={THREE.DoubleSide} />
+        <>
+          {/* the hood, resting behind the head */}
+          <mesh position={[0, 1.4, -0.06]} rotation={[0.35, 0, -0.2 * Math.PI]} castShadow name="beat:0.8">
+            <torusGeometry args={[0.58, 0.14, 14, 36, Math.PI * 1.4]} />
+            <meshPhysicalMaterial color="#8f949a" roughness={0.9} sheen={1} sheenColor="#d3d7db" />
           </mesh>
-          <mesh position={[0, 0.14, 0]} rotation={[Math.PI / 2, 0, 0]} name="beat:0.5">
-            <torusGeometry args={[0.565, 0.075, 12, 48]} />
-            <Mat color="#c79434" rough={1} />
-          </mesh>
-          <mesh position={[0, 0.64, 0]} name="beat:1.5" castShadow>
-            <sphereGeometry args={[0.12, 20, 16]} />
-            <Mat color="#f1e6d2" rough={1} />
-          </mesh>
-        </group>
+          {/* a small knit beanie, worn back on the head */}
+          <group position={HEAD.c} rotation={[-0.35, 0, 0.1]}>
+            <mesh name="beat:1.2" position={[0, 0.2, -0.05]} castShadow>
+              <sphereGeometry args={[0.47, 40, 18, 0, Math.PI * 2, 0, Math.PI * 0.36]} />
+              <meshPhysicalMaterial color="#d8cbb3" roughness={1} sheen={1} sheenColor="#fff6e6" bumpMap={knitTexture()} bumpScale={2} side={THREE.DoubleSide} />
+            </mesh>
+            <mesh name="beat:1.5" position={[0, 0.49, -0.05]} rotation={[Math.PI / 2, 0, 0]}>
+              <torusGeometry args={[0.39, 0.06, 12, 40]} />
+              <meshPhysicalMaterial color="#c9bba1" roughness={1} sheen={1} sheenColor="#fff6e6" bumpMap={knitTexture()} bumpScale={2} />
+            </mesh>
+          </group>
+        </>
       );
     case 'dev':
+      // A focused brow: two small feathered ridges angled over the eyes.
       return (
         <>
-          <mesh position={[0, 1.45, 0.02]} rotation={[0, 0, -0.2 * Math.PI]} castShadow name="beat:0">
-            <torusGeometry args={[0.6, 0.13, 12, 32, Math.PI * 1.4]} />
-            <Mat color="#323a4a" rough={0.95} />
-          </mesh>
-          <mesh position={[0, 1.45, 0.05]} castShadow name="beat:1">
-            <torusGeometry args={[0.66, 0.045, 8, 32, Math.PI]} />
-            <Mat color="#1f1f22" rough={0.4} />
-          </mesh>
           {[-1, 1].map((s) => (
-            <group key={s} position={[s * 0.66, 1.42, 0.05]} rotation={[0, 0, Math.PI / 2]} name="beat:1.4">
-              <mesh>
-                <cylinderGeometry args={[0.15, 0.15, 0.12, 24]} />
-                <Mat color="#1f1f22" rough={0.4} />
-              </mesh>
-              <mesh position={[0, -s * 0.065, 0]}>
-                <cylinderGeometry args={[0.08, 0.08, 0.01, 20]} />
-                <Mat color="#7dd3c0" emissive="#7dd3c0" intensity={1.2} />
-              </mesh>
-            </group>
+            <mesh key={s} name="beat:1" position={[s * 0.2, 1.7, 0.56]} rotation={[0.2, s * 0.3, s * -0.35]} castShadow>
+              <capsuleGeometry args={[0.035, 0.16, 4, 10]} />
+              <meshPhysicalMaterial color="#3e5a2a" roughness={1} sheen={1} sheenColor={SHEEN} />
+            </mesh>
           ))}
         </>
       );
@@ -496,8 +515,10 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
     const breathe = walking ? 1 : 1 + Math.sin(t * 2) * 0.012;
     body.current.scale.set(breathe, 2 - breathe, breathe);
     body.current.rotation.z = THREE.MathUtils.damp(body.current.rotation.z, stride * 0.09, 12, dt);
-    body.current.rotation.x = THREE.MathUtils.damp(body.current.rotation.x, sitting ? -0.08 : 0, 6, dt);
-    const legTarget = sitting ? -1.35 : 0;
+    const flying = activity === 'fly';
+    body.current.rotation.x = THREE.MathUtils.damp(body.current.rotation.x, sitting ? -0.08 : flying ? 0.35 : 0, 6, dt);
+    // Seated, legs point forward; in flight they tuck back.
+    const legTarget = sitting ? -1.35 : flying ? 0.9 : 0;
     legL.current!.rotation.x = walking ? stride * 0.7 : THREE.MathUtils.damp(legL.current!.rotation.x, legTarget, 8, dt);
     legR.current!.rotation.x = walking ? -stride * 0.7 : THREE.MathUtils.damp(legR.current!.rotation.x, legTarget, 8, dt);
 
@@ -506,9 +527,12 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
     const flutter = walking ? Math.sin(t * 13) * 0.12 : 0;
     const sipLift = activity === 'sip' ? Math.max(0, Math.sin(t * 0.8)) * 0.6 : 0;
     wingL.current!.rotation.x = 0.2 + tap + flutter;
+    // In flight both wings beat hard and wide.
+    const beat = flying ? 0.25 + 1.1 * Math.abs(Math.sin(t * 16)) : 0.25;
+    wingL.current!.rotation.z = THREE.MathUtils.damp(wingL.current!.rotation.z, beat, 20, dt);
     wingR.current!.rotation.x = THREE.MathUtils.damp(wingR.current!.rotation.x, 0.2 - tap + flutter - sipLift - (activity === 'beckon' ? 0.9 : 0), 12, dt);
     // Beckoning: the right wing lifts and waves "this way".
-    const wave = activity === 'beckon' ? -1.05 + Math.sin(t * 7) * 0.35 : -0.25;
+    const wave = activity === 'beckon' ? -1.05 + Math.sin(t * 7) * 0.35 : -beat;
     wingR.current!.rotation.z = THREE.MathUtils.damp(wingR.current!.rotation.z, wave, 10, dt);
 
     // Head: look at what matters, otherwise tilt about curiously.
@@ -526,12 +550,14 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
     if (activity === 'sip') pitch += Math.max(0, Math.sin(t * 0.8)) * 0.35;
     if (activity === 'watch') yaw += Math.sin(t * 2.2) * 0.04;
     if (activity === 'beckon') roll = Math.sin(t * 3.5) * 0.14;
+    if (flying) pitch -= 0.25;
     head.current.rotation.y = THREE.MathUtils.damp(head.current.rotation.y, yaw, 5, dt);
     head.current.rotation.x = THREE.MathUtils.damp(head.current.rotation.x, pitch, 5, dt);
     head.current.rotation.z = THREE.MathUtils.damp(head.current.rotation.z, roll, 3, dt);
 
     if (eyes.current) {
-      const blink = t % 3.8 > 3.66 ? 0.1 : 1;
+      // Focused (developer) eyes narrow slightly.
+      const blink = t % 3.8 > 3.66 ? 0.1 : outfit === 'dev' ? 0.82 : 1;
       eyes.current.scale.y = THREE.MathUtils.damp(eyes.current.scale.y, blink, 40, dt);
     }
   });
