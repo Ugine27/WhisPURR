@@ -1,17 +1,7 @@
 import { lazy, Suspense, useState } from 'react';
-import KiviWorld from './KiviWorld';
 
-// Kivi is rendered with three.js, so load the page only when Persona opens.
-const PersonaWorlds = lazy(() => import('../personaWorlds/PersonaWorlds'));
-
-const supportsWebGL = (() => {
-  try {
-    const canvas = document.createElement('canvas');
-    return !!(canvas.getContext('webgl2') || canvas.getContext('webgl'));
-  } catch (e) {
-    return false;
-  }
-})();
+// The persona onboarding flow, loaded when the Persona page opens.
+const Onboarding = lazy(() => import('../onboarding/Onboarding'));
 
 interface StylesManagerProps {
   currentMode: string;
@@ -77,13 +67,9 @@ export default function StylesManager({
 
   return (
     <div className="w-full h-full flex flex-col relative overflow-hidden">
-      {supportsWebGL ? (
-        <Suspense fallback={<div className="w-full h-full rounded-3xl bg-[#0b100a]" />}>
-          <PersonaWorlds {...worldProps} />
-        </Suspense>
-      ) : (
-        <KiviWorld {...worldProps} />
-      )}
+      <Suspense fallback={<div className="w-full h-full rounded-3xl bg-[#070b06]" />}>
+        <Onboarding {...worldProps} />
+      </Suspense>
     </div>
   );
 }
