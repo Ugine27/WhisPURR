@@ -1,16 +1,17 @@
 import { useLayoutEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { RoundedBox, Sparkles } from '@react-three/drei';
+import { Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
 import type { Activity, Outfit, Pose } from './Kiwi3D';
-import { B, canvasTexture, Cyl, Mug, Plant, useGlow, woodTexture } from './kit';
+import { Model, usePBR } from './assets';
+import { B, canvasTexture, Cyl, Mug, useGlow } from './kit';
+import { wind } from './nature';
 import { seeded, V3 } from './util';
 
 /*
- * Kivi's hubs. Each is a small building in the forest with a furnished
- * interior. To add a hub, write its scene below and append an entry to ROOMS:
- * the map, labels, camera moves, Kivi's route, outfit and the hub's panel all
- * come from this data.
+ * Kivi's hubs. Each is a building with a furnished interior. To add a hub,
+ * write its scene below and append an entry to ROOMS: the map, labels,
+ * camera moves, Kivi's route, outfit and the hub's panel all come from it.
  *
  * Coordinates inside a hub are its own: the front door faces +z.
  */
@@ -23,7 +24,7 @@ export interface HubRefs {
 
 export interface RoomDef {
   id: string;
-  persona: string; // mode id used by the app (see useKiviInput MODES)
+  persona: string;
   label: string;
   chip: string;
   outfit: Outfit;
@@ -32,12 +33,13 @@ export interface RoomDef {
   icon: 'office' | 'cafe' | 'dev';
   position: V3;
   rotation: number;
+  footprint: number; // radius the terrain is flattened under
   labelY: number;
   doorstep: V3;
   entry: V3;
   approach: V3[];
   seat: { position: V3; yaw: number };
-  focus: V3;
+  focus: V3; // Kivi's device; the hub panel grows from here
   camera: { position: V3; look: V3 };
   arrival: { position: V3; look: V3 };
   Scene: (props: HubRefs) => JSX.Element;
@@ -58,9 +60,9 @@ function useFade(group: React.RefObject<THREE.Group>, amount: React.MutableRefOb
       if (m.userData.baseOpacity === undefined) m.userData.baseOpacity = m.opacity;
       const base = m.userData.baseOpacity as number;
       const fading = a < 0.999;
-      const wantTransparent = fading || base < 1;
-      if (m.transparent !== wantTransparent) {
-        m.transparent = wantTransparent;
+      const want = fading || base < 1 || !!(m as THREE.MeshPhysicalMaterial).transmission;
+      if (m.transparent !== want) {
+        m.transparent = want;
         m.needsUpdate = true;
       }
       m.opacity = base * a;
@@ -69,116 +71,27 @@ function useFade(group: React.RefObject<THREE.Group>, amount: React.MutableRefOb
   });
 }
 
-let moss: THREE.CanvasTexture | null = null;
-export function mossTexture() {
-  if (moss) return moss;
-  const rand = seeded(77);
-  moss = canvasTexture(
-    256,
-    256,
-    (ctx) => {
-      ctx.fillStyle = '#5d7a37';
-      ctx.fillRect(0, 0, 256, 256);
-      const tones = ['#6f8f3f', '#4d6a2c', '#7fa048', '#58763a', '#8aa955'];
-      for (let i = 0; i < 2600; i++) {
-        ctx.fillStyle = tones[Math.floor(rand() * tones.length)];
-        ctx.globalAlpha = 0.35 + rand() * 0.5;
-        ctx.beginPath();
-        ctx.arc(rand() * 256, rand() * 256, 1 + rand() * 3.5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-    },
-    [4, 3],
-  );
-  return moss;
-}
-
-function Glass({ w, h, p, rot }: { w: number; h: number; p: V3; rot?: V3 }) {
-  return (
-    <mesh position={p} rotation={rot}>
-      <planeGeometry args={[w, h]} />
-      <meshPhysicalMaterial color="#e4eef0" roughness={0.04} metalness={0.1} transparent opacity={0.16} envMapIntensity={2.2} side={THREE.DoubleSide} depthWrite={false} />
-    </mesh>
-  );
-}
-
-// A glass curtain wall along the x axis: mullions, rails and panes.
-function GlassWall({ length, height, p, rot, gap }: { length: number; height: number; p: V3; rot?: V3; gap?: [number, number] }) {
-  const bays = Math.max(2, Math.round(length / 1.2));
-  const bw = length / bays;
-  return (
-    <group position={p} rotation={rot}>
-      <B s={[length, 0.08, 0.1]} p={[0, 0.04, 0]} r={0.02} c="#2b2f33" metal={0.6} rough={0.35} />
-      <B s={[length, 0.08, 0.1]} p={[0, height - 0.04, 0]} r={0.02} c="#2b2f33" metal={0.6} rough={0.35} />
-      {Array.from({ length: bays + 1 }, (_, i) => (
-        <B key={i} s={[0.06, height, 0.1]} p={[-length / 2 + i * bw, height / 2, 0]} r={0.015} c="#2b2f33" metal={0.6} rough={0.35} />
-      ))}
-      {Array.from({ length: bays }, (_, i) => {
-        const cx = -length / 2 + (i + 0.5) * bw;
-        if (gap && cx > gap[0] && cx < gap[1]) return null;
-        return <Glass key={i} w={bw - 0.06} h={height - 0.16} p={[cx, height / 2, 0]} />;
-      })}
-    </group>
-  );
-}
-
-// A dome sliced into a back part that always stays and a front part that can
-// fade. Triangles inside `hole` (x/y extents) are removed to leave a doorway.
-function domeGeometry(r: number, squash: number, keep: (c: THREE.Vector3) => boolean) {
-  const g = new THREE.SphereGeometry(r, 72, 36, 0, Math.PI * 2, 0, Math.PI / 2).toNonIndexed();
-  g.scale(1, squash, 1);
-  const pos = g.attributes.position as THREE.BufferAttribute;
-  const nrm = g.attributes.normal as THREE.BufferAttribute;
-  const uv = g.attributes.uv as THREE.BufferAttribute;
-  const outP: number[] = [];
-  const outN: number[] = [];
-  const outU: number[] = [];
+// Keep only the triangles of a geometry whose centre passes `keep`.
+function filterTriangles(src: THREE.BufferGeometry, keep: (c: THREE.Vector3) => boolean) {
+  const g = src.index ? src.toNonIndexed() : src;
+  const out = new THREE.BufferGeometry();
   const c = new THREE.Vector3();
+  const a = new THREE.Vector3();
+  const names = Object.keys(g.attributes);
+  const data: Record<string, number[]> = Object.fromEntries(names.map((n) => [n, []]));
+  const pos = g.attributes.position as THREE.BufferAttribute;
   for (let i = 0; i < pos.count; i += 3) {
     c.set(0, 0, 0);
-    for (let k = 0; k < 3; k++) c.add(new THREE.Vector3().fromBufferAttribute(pos, i + k));
+    for (let k = 0; k < 3; k++) c.add(a.fromBufferAttribute(pos, i + k));
     c.divideScalar(3);
     if (!keep(c)) continue;
-    for (let k = 0; k < 3; k++) {
-      outP.push(pos.getX(i + k), pos.getY(i + k), pos.getZ(i + k));
-      outN.push(nrm.getX(i + k), nrm.getY(i + k), nrm.getZ(i + k));
-      outU.push(uv.getX(i + k), uv.getY(i + k));
+    for (const n of names) {
+      const attr = g.attributes[n] as THREE.BufferAttribute;
+      for (let k = 0; k < 3; k++) for (let d = 0; d < attr.itemSize; d++) data[n].push(attr.getComponent(i + k, d));
     }
   }
-  const out = new THREE.BufferGeometry();
-  out.setAttribute('position', new THREE.Float32BufferAttribute(outP, 3));
-  out.setAttribute('normal', new THREE.Float32BufferAttribute(outN, 3));
-  out.setAttribute('uv', new THREE.Float32BufferAttribute(outU, 2));
+  for (const n of names) out.setAttribute(n, new THREE.Float32BufferAttribute(data[n], (g.attributes[n] as THREE.BufferAttribute).itemSize));
   return out;
-}
-
-function MossDome({ r, squash, inner, front }: { r: number; squash: number; inner: string; front: (c: THREE.Vector3) => boolean }) {
-  const back = useMemo(() => domeGeometry(r, squash, (c) => !front(c)), [r, squash, front]);
-  return (
-    <group>
-      <mesh geometry={back} castShadow receiveShadow>
-        <meshStandardMaterial map={mossTexture()} bumpMap={mossTexture()} bumpScale={3} roughness={1} side={THREE.FrontSide} />
-      </mesh>
-      <mesh geometry={back} scale={0.985} receiveShadow>
-        <meshStandardMaterial color={inner} roughness={0.95} side={THREE.BackSide} />
-      </mesh>
-    </group>
-  );
-}
-
-function MossDomeFront({ r, squash, inner, front, hole }: { r: number; squash: number; inner: string; front: (c: THREE.Vector3) => boolean; hole: (c: THREE.Vector3) => boolean }) {
-  const geo = useMemo(() => domeGeometry(r, squash, (c) => front(c) && !hole(c)), [r, squash, front, hole]);
-  return (
-    <group>
-      <mesh geometry={geo} castShadow receiveShadow>
-        <meshStandardMaterial map={mossTexture()} bumpMap={mossTexture()} bumpScale={3} roughness={1} />
-      </mesh>
-      <mesh geometry={geo} scale={0.985}>
-        <meshStandardMaterial color={inner} roughness={0.95} side={THREE.BackSide} />
-      </mesh>
-    </group>
-  );
 }
 
 function archShape(w: number, h: number) {
@@ -192,78 +105,33 @@ function archShape(w: number, h: number) {
   return s;
 }
 
-function RoundDoor({ w, h, color, glass, door, glow }: { w: number; h: number; color: string; glass?: string; door: React.MutableRefObject<number>; glow: string }) {
-  const hinge = useRef<THREE.Group>(null);
-  const leaf = useMemo(() => {
-    const g = new THREE.ExtrudeGeometry(archShape(w - 0.06, h - 0.03), { depth: 0.08, bevelEnabled: true, bevelThickness: 0.015, bevelSize: 0.015, bevelSegments: 2, curveSegments: 40 });
-    g.translate((w - 0.06) / 2, 0, -0.04);
-    return g;
-  }, [w, h]);
-  const frame = useMemo(() => {
-    const outer = archShape(w + 0.3, h + 0.15);
-    outer.holes.push(new THREE.Path(archShape(w, h).getPoints(40)));
-    return new THREE.ExtrudeGeometry(outer, { depth: 0.22, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 3, curveSegments: 40 });
-  }, [w, h]);
-  useFrame(() => {
-    // Swings inward, away from the viewer.
-    if (hinge.current) hinge.current.rotation.y = door.current * 1.7;
-  });
+function Stones({ r, count, seed, skipFront }: { r: number; count: number; seed: number; skipFront?: boolean }) {
+  const rock = usePBR('mossy_rock', [1, 1]);
+  const stones = useMemo(() => {
+    const rand = seeded(seed);
+    return Array.from({ length: count }, (_, i) => {
+      const a = (i / count) * Math.PI * 2 + rand() * 0.1;
+      return { a, s: 0.22 + rand() * 0.2, x: Math.cos(a) * r, z: Math.sin(a) * r, tilt: rand() };
+    }).filter((st) => !(skipFront && st.z > r * 0.75 && Math.abs(st.x) < 1.4));
+  }, [r, count, seed, skipFront]);
   return (
-    <group>
-      <mesh geometry={frame} position={[0, 0, -0.12]} castShadow>
-        <meshStandardMaterial color="#b3a894" roughness={0.9} />
-      </mesh>
-      <mesh position={[0, h / 2, -0.08]}>
-        <planeGeometry args={[w, h]} />
-        <meshBasicMaterial color={glow} toneMapped={false} />
-      </mesh>
-      <group ref={hinge} position={[-(w - 0.06) / 2, 0.015, 0]}>
-        <mesh geometry={leaf} castShadow>
-          <meshStandardMaterial color={color} roughness={0.55} />
+    <>
+      {stones.map((st, i) => (
+        <mesh key={i} position={[st.x, st.s * 0.3, st.z]} rotation={[st.tilt, st.a, 0]} scale={[st.s * 1.4, st.s * 0.8, st.s]} castShadow receiveShadow>
+          <dodecahedronGeometry args={[1, 2]} />
+          <meshStandardMaterial {...rock} />
         </mesh>
-        {glass && (
-          <mesh position={[(w - 0.06) / 2, h * 0.68, 0.05]}>
-            <circleGeometry args={[w * 0.18, 28]} />
-            <meshStandardMaterial color={glass} emissive={glass} emissiveIntensity={0.8} roughness={0.1} />
-          </mesh>
-        )}
-        <mesh position={[w - 0.22, h * 0.45, 0.07]} rotation={[Math.PI / 2, 0, 0]} castShadow>
-          <cylinderGeometry args={[0.035, 0.035, 0.07, 16]} />
-          <meshStandardMaterial color="#c8a36a" metalness={0.9} roughness={0.25} />
-        </mesh>
-      </group>
-    </group>
-  );
-}
-
-function Armchair({ p, yaw, color }: { p: V3; yaw: number; color: string }) {
-  const velvet = { color, roughness: 0.9, sheen: 1, sheenColor: '#ffffff', sheenRoughness: 0.4 };
-  return (
-    <group position={p} rotation={[0, yaw, 0]}>
-      <RoundedBox args={[0.95, 0.2, 0.85]} radius={0.08} smoothness={4} position={[0, 0.36, 0]} castShadow receiveShadow>
-        <meshPhysicalMaterial {...velvet} />
-      </RoundedBox>
-      <RoundedBox args={[0.95, 0.75, 0.22]} radius={0.1} smoothness={4} position={[0, 0.72, -0.34]} castShadow>
-        <meshPhysicalMaterial {...velvet} />
-      </RoundedBox>
-      {[-1, 1].map((s) => (
-        <RoundedBox key={s} args={[0.18, 0.5, 0.8]} radius={0.08} smoothness={4} position={[s * 0.44, 0.52, 0]} castShadow>
-          <meshPhysicalMaterial {...velvet} />
-        </RoundedBox>
       ))}
-      {[
-        [-0.36, 0.32],
-        [0.36, 0.32],
-        [-0.36, -0.32],
-        [0.36, -0.32],
-      ].map(([x, z]) => (
-        <Cyl key={`${x}${z}`} r={0.03} top={0.02} h={0.26} p={[x, 0.13, z]} c="#4a3222" rough={0.5} />
-      ))}
-    </group>
+    </>
   );
 }
 
 /* ---------------------------------- Office --------------------------------- */
+// A geodesic glass-and-steel dome set into a mossy rock face.
+
+const OFFICE_R = 4.3;
+const officeFront = (c: THREE.Vector3) => c.z > OFFICE_R * 0.42 && Math.abs(c.x) < OFFICE_R * 0.85;
+const officeHole = (c: THREE.Vector3) => Math.abs(c.x) < 0.75 && c.y < 2.35;
 
 function inlayTexture() {
   return canvasTexture(512, 256, (ctx) => {
@@ -272,9 +140,8 @@ function inlayTexture() {
     ctx.strokeStyle = 'rgba(125,211,230,0.55)';
     ctx.lineWidth = 3;
     for (let i = 0; i < 6; i++) {
-      const x = 40 + i * 76;
       ctx.beginPath();
-      ctx.roundRect(x, 90, 56, 56, 12);
+      ctx.roundRect(40 + i * 76, 90, 56, 56, 12);
       ctx.stroke();
     }
     ctx.fillStyle = 'rgba(125,211,230,0.35)';
@@ -282,380 +149,437 @@ function inlayTexture() {
   });
 }
 
+// One steel strut per unique triangle edge.
+function edgeStruts(g: THREE.BufferGeometry) {
+  const pos = g.attributes.position as THREE.BufferAttribute;
+  const seen = new Set<string>();
+  const out: THREE.Matrix4[] = [];
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const key = (v: THREE.Vector3) => `${v.x.toFixed(2)},${v.y.toFixed(2)},${v.z.toFixed(2)}`;
+  for (let i = 0; i < pos.count; i += 3)
+    for (const [p, q] of [
+      [0, 1],
+      [1, 2],
+      [2, 0],
+    ]) {
+      a.fromBufferAttribute(pos, i + p);
+      b.fromBufferAttribute(pos, i + q);
+      const k = [key(a), key(b)].sort().join('|');
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const mid = a.clone().add(b).multiplyScalar(0.5);
+      const dir = b.clone().sub(a);
+      const len = dir.length();
+      const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+      out.push(new THREE.Matrix4().compose(mid, quat, new THREE.Vector3(0.045, len, 0.045)));
+    }
+  return out;
+}
+
+function Struts({ geo }: { geo: THREE.BufferGeometry }) {
+  const mats = useMemo(() => edgeStruts(geo), [geo]);
+  const ref = useRef<THREE.InstancedMesh>(null);
+  useLayoutEffect(() => {
+    mats.forEach((m, i) => ref.current!.setMatrixAt(i, m));
+    ref.current!.instanceMatrix.needsUpdate = true;
+  }, [mats]);
+  return (
+    <instancedMesh ref={ref} args={[undefined, undefined, mats.length]} castShadow>
+      <cylinderGeometry args={[1, 1, 1, 8]} />
+      <meshStandardMaterial color="#9aa2a8" metalness={1} roughness={0.28} />
+    </instancedMesh>
+  );
+}
+
+function GlassPane({ geo }: { geo: THREE.BufferGeometry }) {
+  return (
+    <mesh geometry={geo}>
+      <meshPhysicalMaterial color="#eef6f2" transmission={1} ior={1.5} thickness={0.04} roughness={0.04} metalness={0} envMapIntensity={1.4} side={THREE.DoubleSide} transparent />
+    </mesh>
+  );
+}
+
 function OfficeScene({ lit, open, door }: HubRefs) {
-  const floor = useMemo(() => {
-    const t = woodTexture('#3b2618', 9);
-    t.repeat.set(3, 2.5);
-    return t;
-  }, []);
+  const floor = usePBR('dark_wood', [3, 3]);
   const inlay = useMemo(inlayTexture, []);
   const front = useRef<THREE.Group>(null);
   const slide = useRef<THREE.Group>(null);
-  const ceiling = useRef<(THREE.MeshStandardMaterial | null)[]>([]);
-  const lights = useRef<(THREE.PointLight | null)[]>([]);
+  const lamps = useRef<(THREE.PointLight | null)[]>([]);
   const glow = useGlow(lit, 0.4, 1);
   useFade(front, open);
   useFrame(() => {
-    if (slide.current) slide.current.position.x = door.current * 1.05;
-    ceiling.current.forEach((m) => m && (m.emissiveIntensity = 1.2 + glow.current * 1.5));
-    lights.current.forEach((l) => l && (l.intensity = 2.5 + glow.current * 2));
+    if (slide.current) slide.current.position.x = door.current * 1.3;
+    lamps.current.forEach((l) => l && (l.intensity = 3 + glow.current * 3));
   });
-  const W = 7.2;
-  const D = 5.4;
-  const H = 3.0;
-  const chair = (p: V3, yaw: number) => (
-    <group position={p} rotation={[0, yaw, 0]}>
-      <B s={[0.5, 0.08, 0.5]} p={[0, 0.46, 0]} r={0.035} c="#1f1f22" rough={0.5} />
-      <B s={[0.5, 0.55, 0.07]} p={[0, 0.78, -0.23]} r={0.035} c="#1f1f22" rough={0.5} />
-      <Cyl r={0.025} h={0.42} p={[0, 0.21, 0]} c="#9aa0a6" metal={0.8} rough={0.25} />
-    </group>
-  );
+  const { back, frontGeo } = useMemo(() => {
+    const ico = new THREE.IcosahedronGeometry(OFFICE_R, 2);
+    const upper = filterTriangles(ico, (c) => c.y > 0.05);
+    return { back: filterTriangles(upper, (c) => !officeFront(c)), frontGeo: filterTriangles(upper, (c) => officeFront(c) && !officeHole(c)) };
+  }, []);
+  const chair = (p: V3, yaw: number) => <Model name="dining_chair_02" position={p} rotation={[0, yaw, 0]} />;
   return (
     <group>
-      {/* Mossy bank behind, planters along the base */}
-      <mesh position={[0, -0.4, -D / 2 - 2.4]} scale={[6, 1.6, 2]} receiveShadow castShadow>
-        <sphereGeometry args={[1, 40, 20]} />
-        <meshStandardMaterial map={mossTexture()} roughness={1} />
-      </mesh>
-      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <planeGeometry args={[W, D]} />
-        <meshPhysicalMaterial map={floor} roughness={0.35} clearcoat={0.8} clearcoatRoughness={0.2} />
-      </mesh>
-      <B s={[W + 0.4, 0.12, D + 0.4]} p={[0, -0.05, 0]} r={0.05} c="#a39c90" rough={0.9} />
+      {/* The rock face the dome is built into, with mossy boulders */}
+      <Model name="rock_face_01" position={[-1.4, -0.3, -OFFICE_R - 0.2]} rotation={[0, 0.15, 0]} scale={1.9} />
+      <Model name="rock_face_01" position={[3.3, -0.3, -OFFICE_R + 1.2]} rotation={[0, -0.7, 0]} scale={1.5} />
+      <Model name="rock_moss_set_02" position={[-OFFICE_R - 0.4, 0, 0.6]} rotation={[0, 1.3, 0]} scale={0.6} />
 
-      {/* Roof: a thin slab with a slight tilt, lit strips underneath */}
-      <group position={[0, H, 0]} rotation={[-0.05, 0, 0]}>
-        <B s={[W + 1.0, 0.16, D + 1.0]} p={[0, 0.12, 0.2]} r={0.05} c="#2f3439" metal={0.5} rough={0.4} />
-        {[-1.6, 0, 1.6].map((x, i) => (
-          <mesh key={x} position={[x, 0.02, 0]} rotation={[Math.PI / 2, 0, 0]}>
-            <planeGeometry args={[0.12, D - 1]} />
-            <meshStandardMaterial ref={(m) => (ceiling.current[i] = m)} color="#ffffff" emissive="#f4f8ff" emissiveIntensity={1.5} toneMapped={false} />
-          </mesh>
-        ))}
-      </group>
-      {[-1.6, 1.6].map((x, i) => (
-        <pointLight key={x} ref={(l) => (lights.current[i] = l)} position={[x, H - 0.4, 0]} color="#f2f6ff" intensity={3} distance={6} decay={1.4} />
-      ))}
+      <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <circleGeometry args={[OFFICE_R - 0.05, 72]} />
+        <meshPhysicalMaterial {...floor} clearcoat={0.7} clearcoatRoughness={0.25} />
+      </mesh>
+      <mesh position={[0, 0.06, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <ringGeometry args={[OFFICE_R - 0.05, OFFICE_R + 0.25, 72]} />
+        <meshStandardMaterial color="#8f949a" metalness={0.6} roughness={0.35} />
+      </mesh>
 
-      {/* Glass walls: back, sides; the front fades so the camera can enter */}
-      <GlassWall length={W} height={H} p={[0, 0, -D / 2]} />
-      <GlassWall length={D} height={H} p={[-W / 2, 0, 0]} rot={[0, Math.PI / 2, 0]} />
-      <GlassWall length={D} height={H} p={[W / 2, 0, 0]} rot={[0, Math.PI / 2, 0]} />
+      <GlassPane geo={back} />
+      <Struts geo={back} />
       <group ref={front}>
-        <GlassWall length={W} height={H} p={[0, 0, D / 2]} gap={[-0.6, 0.6]} />
-        <group ref={slide} position={[0, 0, D / 2 + 0.08]}>
-          <B s={[1.1, H - 0.12, 0.05]} p={[0, (H - 0.12) / 2 + 0.06, 0]} r={0.02} c="#2b2f33" metal={0.6} />
-          <Glass w={1.0} h={H - 0.3} p={[0, H / 2, 0.03]} />
+        <GlassPane geo={frontGeo} />
+        <Struts geo={frontGeo} />
+        <group ref={slide} position={[0, 0, OFFICE_R - 0.35]}>
+          {/* A slim steel frame around a glass door */}
+          <B s={[1.4, 0.06, 0.06]} p={[0, 2.27, 0]} r={0.02} c="#9aa2a8" metal={1} rough={0.3} />
+          <B s={[1.4, 0.06, 0.06]} p={[0, 0.03, 0]} r={0.02} c="#9aa2a8" metal={1} rough={0.3} />
+          {[-0.67, 0.67].map((x) => (
+            <B key={x} s={[0.06, 2.3, 0.06]} p={[x, 1.15, 0]} r={0.02} c="#9aa2a8" metal={1} rough={0.3} />
+          ))}
+          <B s={[0.03, 0.4, 0.05]} p={[-0.5, 1.1, 0.05]} r={0.01} c="#c9ced4" metal={1} rough={0.2} />
+          <mesh position={[0, 1.15, 0.0]}>
+            <planeGeometry args={[1.25, 2.15]} />
+            <meshPhysicalMaterial color="#eef6f2" transmission={1} ior={1.5} thickness={0.02} roughness={0.04} transparent />
+          </mesh>
         </group>
       </group>
 
-      {/* Conference room behind a glass partition */}
-      <GlassWall length={4.0} height={H - 0.1} p={[-1.6, 0, -0.95]} />
-      <GlassWall length={1.75} height={H - 0.1} p={[0.4, 0, -1.82]} rot={[0, Math.PI / 2, 0]} />
-      <B s={[3.0, 0.07, 1.05]} p={[-1.7, 0.75, -1.85]} r={0.03} c="#5a2a1c" rough={0.3} />
-      {[-2.7, -0.7].map((x) => (
-        <Cyl key={x} r={0.05} h={0.72} p={[x, 0.36, -1.85]} c="#1f1f22" metal={0.6} rough={0.3} />
-      ))}
-      {[-2.6, -1.7, -0.8].map((x) => (
+      {/* Conference room behind a glass screen */}
+      <mesh position={[-1.55, 1.2, -0.75]}>
+        <planeGeometry args={[3.2, 2.4]} />
+        <meshPhysicalMaterial color="#eef6f2" transmission={1} ior={1.5} thickness={0.02} roughness={0.06} side={THREE.DoubleSide} transparent />
+      </mesh>
+      <B s={[3.2, 0.05, 0.06]} p={[-1.55, 2.42, -0.75]} r={0.02} c="#9aa2a8" metal={1} rough={0.3} />
+      <Model name="dining_table" position={[-1.6, 0, -2.1]} rotation={[0, 0.05, 0]} />
+      {[-2.4, -1.6, -0.8].map((x) => (
         <group key={x}>
-          {chair([x, 0, -1.2], Math.PI)}
-          {chair([x, 0, -2.45], 0)}
+          {chair([x, 0, -1.3], Math.PI)}
+          {chair([x, 0, -2.9], 0)}
         </group>
       ))}
 
-      {/* Mahogany desk with a digital inlay, laptops, papers */}
-      <B s={[2.3, 0.08, 1.0]} p={[1.6, 0.76, 0.35]} r={0.035} c="#5a1f14" rough={0.25} />
-      <B s={[2.2, 0.62, 0.9]} p={[1.6, 0.41, 0.35]} r={0.03} c="#4a1a10" rough={0.35} />
-      <mesh position={[1.25, 0.803, 0.55]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[0.9, 0.3]} />
+      {/* Mahogany desk with a digital inlay; laptop and lamp */}
+      <B s={[2.2, 0.07, 0.95]} p={[1.35, 0.76, 0.5]} r={0.03} c="#5a1f14" rough={0.22} />
+      <B s={[2.1, 0.62, 0.85]} p={[1.35, 0.41, 0.5]} r={0.03} c="#4a1a10" rough={0.35} />
+      <mesh position={[1.0, 0.797, 0.72]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[0.9, 0.28]} />
         <meshStandardMaterial map={inlay} emissiveMap={inlay} emissive="#ffffff" emissiveIntensity={0.9} roughness={0.2} />
       </mesh>
-      <group position={[1.75, 0.8, 0.3]} rotation={[0, Math.PI, 0]}>
-        <B s={[0.62, 0.02, 0.42]} p={[0, 0.01, 0]} r={0.008} c="#c9ccd1" metal={0.8} rough={0.25} />
-        <group position={[0, 0.02, -0.2]} rotation={[-0.3, 0, 0]}>
-          <B s={[0.62, 0.42, 0.015]} p={[0, 0.21, 0]} r={0.008} c="#c9ccd1" metal={0.8} rough={0.25} />
-        </group>
-      </group>
-      {[0, 1].map((i) => (
-        <B key={i} s={[0.3, 0.005, 0.4]} p={[2.45, 0.803 + i * 0.006, 0.4]} rot={[0, 0.15 * i, 0]} r={0.002} c="#fbfaf6" rough={0.9} shadow={false} />
-      ))}
-      {chair([1.7, 0, -0.45], 0)}
-      <B s={[1.6, 0.06, 0.6]} p={[3.1, 0.74, -1.6]} r={0.02} c="#5a1f14" rough={0.3} />
-      <group position={[3.1, 0.77, -1.6]}>
-        <B s={[0.5, 0.018, 0.34]} p={[0, 0.01, 0]} r={0.006} c="#c9ccd1" metal={0.8} rough={0.25} />
+      <Model name="classic_laptop" position={[1.45, 0.795, 0.45]} rotation={[0, Math.PI, 0]} />
+      <Model name="desk_lamp_arm_01" position={[0.5, 0.795, 0.3]} rotation={[0, 2.4, 0]} />
+      <group position={[1.4, 0, -0.35]}>
+        <B s={[0.52, 0.08, 0.5]} p={[0, 0.46, 0]} r={0.035} c="#1f1f22" rough={0.5} />
+        <B s={[0.52, 0.58, 0.07]} p={[0, 0.8, -0.24]} r={0.035} c="#1f1f22" rough={0.5} />
+        <Cyl r={0.025} h={0.42} p={[0, 0.21, 0]} c="#9aa0a6" metal={0.9} rough={0.25} />
       </group>
 
-      <Plant p={[-3.1, 0, 2.2]} s={1.8} pot="#e8e2d6" />
-      <Plant p={[3.1, 0, 2.2]} s={1.5} pot="#e8e2d6" />
-      <Plant p={[-3.1, 0, -0.4]} s={1.2} pot="#2f3439" />
-      {[-2.4, -1.2, 0, 1.2, 2.4].map((x) => (
-        <Plant key={x} p={[x, 0, -D / 2 - 0.35]} s={0.8} pot="#6b6358" />
+      <Model name="potted_plant_02" position={[-3.1, 0, 1.6]} scale={1.6} />
+      <Model name="potted_plant_02" position={[3.1, 0, 1.2]} rotation={[0, 2, 0]} scale={1.3} />
+      <Model name="potted_plant_04" position={[2.2, 0.795, 0.75]} scale={1.2} />
+
+      {[-1.2, 1.2].map((x, i) => (
+        <pointLight key={x} ref={(l) => (lamps.current[i] = l)} position={[x, 3.2, 0]} color="#f4f8ff" intensity={3} distance={7} decay={1.4} />
       ))}
-      <B s={[2.6, 0.02, 1.8]} p={[1.5, 0.03, 0.4]} r={0.01} c="#8c8f93" rough={1} shadow={false} />
     </group>
   );
 }
 
 /* ----------------------------------- Café ---------------------------------- */
+// A hobbit-hole: an earthen mound with a round door and glowing windows.
 
-function mosaicTexture() {
-  const rand = seeded(19);
-  return canvasTexture(
-    512,
-    512,
-    (ctx) => {
-      ctx.fillStyle = '#e8dccb';
-      ctx.fillRect(0, 0, 512, 512);
-      const cols = ['#c9785a', '#e9dfcf', '#6d9b8f', '#d9b27a', '#b85f47', '#f1ebe0'];
-      const c = 256;
-      for (let y = 0; y < 512; y += 11) {
-        for (let x = 0; x < 512; x += 11) {
-          const d = Math.hypot(x - c, y - c);
-          const ring = Math.floor(d / 34) % 3;
-          const col = d < 60 ? cols[(Math.floor((Math.atan2(y - c, x - c) + Math.PI) * 3) % 2) * 2] : ring === 0 ? cols[1] : ring === 1 ? cols[Math.floor(rand() * 6)] : cols[5];
-          ctx.fillStyle = col;
-          ctx.fillRect(x + 1 + rand(), y + 1 + rand(), 9, 9);
-        }
-      }
-    },
-    [1, 1],
-  );
-}
+const CAFE_R = 4.4;
+const CAFE_SQUASH = 0.62;
+const CAFE_FACE_Z = 2.9;
 
-function EspressoMachine({ p }: { p: V3 }) {
-  const copper = { color: '#b8733f', metalness: 0.95, roughness: 0.22 };
-  const chrome = { color: '#d9dde1', metalness: 1, roughness: 0.15 };
-  return (
-    <group position={p}>
-      <RoundedBox args={[0.9, 0.42, 0.5]} radius={0.06} smoothness={4} position={[0, 0.21, 0]} castShadow>
-        <meshStandardMaterial {...chrome} />
-      </RoundedBox>
-      <mesh position={[0, 0.62, 0]} castShadow>
-        <cylinderGeometry args={[0.24, 0.3, 0.4, 32]} />
-        <meshStandardMaterial {...copper} />
-      </mesh>
-      <mesh position={[0, 0.82, 0]} castShadow>
-        <sphereGeometry args={[0.24, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
-        <meshStandardMaterial {...copper} />
-      </mesh>
-      <mesh position={[0, 1.1, 0]}>
-        <sphereGeometry args={[0.06, 16, 16]} />
-        <meshStandardMaterial color="#d9a441" metalness={1} roughness={0.2} />
-      </mesh>
-      {[-0.26, 0.26].map((x) => (
-        <group key={x}>
-          <Cyl r={0.05} h={0.12} p={[x, 0.18, 0.3]} c="#2e2e30" metal={0.7} rough={0.3} />
-          <mesh position={[x * 1.35, 0.45, 0.1]} rotation={[0, 0, x > 0 ? -0.6 : 0.6]}>
-            <torusGeometry args={[0.12, 0.018, 8, 24, Math.PI]} />
-            <meshStandardMaterial {...chrome} />
-          </mesh>
-        </group>
-      ))}
-      <mesh position={[0, 0.34, 0.26]}>
-        <circleGeometry args={[0.07, 28]} />
-        <meshStandardMaterial color="#f4efe6" emissive="#f4efe6" emissiveIntensity={0.3} />
-      </mesh>
-    </group>
-  );
-}
-
-function PastryCase({ p }: { p: V3 }) {
-  return (
-    <group position={p}>
-      <RoundedBox args={[0.9, 0.42, 0.5]} radius={0.02} smoothness={3} position={[0, 0.21, 0]}>
-        <meshPhysicalMaterial color="#ffffff" transparent opacity={0.18} roughness={0.05} envMapIntensity={2} depthWrite={false} />
-      </RoundedBox>
-      <pointLight position={[0, 0.35, 0]} color="#ffd9a0" intensity={1.2} distance={1.2} />
-      {[-0.28, 0, 0.28].map((x, i) => (
-        <group key={x}>
-          <mesh position={[x, 0.08, -0.05]} rotation={[Math.PI / 2, 0, 0.4]} castShadow>
-            <torusGeometry args={[0.07, 0.03, 10, 20, Math.PI * 1.2]} />
-            <meshStandardMaterial color="#d59a55" roughness={0.6} />
-          </mesh>
-          <mesh position={[x, 0.06, 0.12]} scale={[1, 0.6, 1]}>
-            <sphereGeometry args={[0.06, 16, 12]} />
-            <meshStandardMaterial color={['#c98a4b', '#e4c27a', '#8a4b2a'][i]} roughness={0.7} />
-          </mesh>
-        </group>
-      ))}
-    </group>
-  );
-}
-
-const CAFE_R = 3.9;
-const CAFE_SQUASH = 0.8;
-const cafeFront = (c: THREE.Vector3) => c.z > CAFE_R * 0.55 && Math.abs(c.x) < CAFE_R * 0.95;
-const cafeHole = (c: THREE.Vector3) => Math.abs(c.x) < 0.62 && c.y < 2.12;
-
-function CupCottage({ p, yaw }: { p: V3; yaw: number }) {
-  const latte = useMemo(
+function Smoke({ p }: { p: V3 }) {
+  const g = useRef<THREE.Group>(null);
+  const tex = useMemo(
     () =>
-      canvasTexture(256, 256, (ctx) => {
-        ctx.fillStyle = '#8a5a36';
-        ctx.fillRect(0, 0, 256, 256);
-        ctx.fillStyle = '#f3e7d3';
-        ctx.beginPath();
-        ctx.moveTo(128, 200);
-        ctx.bezierCurveTo(20, 120, 70, 40, 128, 90);
-        ctx.bezierCurveTo(186, 40, 236, 120, 128, 200);
-        ctx.fill();
+      canvasTexture(64, 64, (ctx) => {
+        const gr = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+        gr.addColorStop(0, 'rgba(235,235,230,0.8)');
+        gr.addColorStop(1, 'rgba(235,235,230,0)');
+        ctx.fillStyle = gr;
+        ctx.fillRect(0, 0, 64, 64);
       }),
     [],
   );
+  useFrame(() => {
+    const t = wind.value;
+    g.current?.children.forEach((c, i) => {
+      const u = (t * 0.12 + i / 8) % 1;
+      c.position.set(Math.sin(u * 5 + i) * 0.2 + u * 0.8, u * 3.2, Math.cos(u * 4 + i) * 0.15);
+      c.scale.setScalar(0.35 + u * 1.4);
+      ((c as THREE.Sprite).material as THREE.SpriteMaterial).opacity = 0.35 * Math.sin(u * Math.PI);
+    });
+  });
   return (
-    <group position={p} rotation={[0, yaw, 0]}>
-      <mesh position={[0, 0.05, 0]} receiveShadow>
-        <cylinderGeometry args={[2.1, 2.2, 0.1, 64]} />
-        <meshPhysicalMaterial color="#d9c6aa" roughness={0.3} clearcoat={0.8} />
-      </mesh>
-      <mesh position={[0, 1.25, 0]} castShadow receiveShadow>
-        <cylinderGeometry args={[1.7, 1.35, 2.3, 64]} />
-        <meshPhysicalMaterial color="#c9a27e" roughness={0.35} clearcoat={1} clearcoatRoughness={0.15} />
-      </mesh>
-      <mesh position={[0, 2.38, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <circleGeometry args={[1.6, 64]} />
-        <meshStandardMaterial map={latte} roughness={0.6} />
-      </mesh>
-      <mesh position={[1.75, 1.35, 0]} rotation={[0, 0, Math.PI / 2]} castShadow>
-        <torusGeometry args={[0.55, 0.16, 16, 40, Math.PI]} />
-        <meshPhysicalMaterial color="#c9a27e" roughness={0.35} clearcoat={1} />
-      </mesh>
-      <group position={[0, 0.1, 1.52]} rotation={[-0.07, 0, 0]}>
-        <mesh position={[0, 0.72, 0]}>
-          <planeGeometry args={[0.8, 1.4]} />
-          <meshStandardMaterial color="#6d4a30" roughness={0.6} />
-        </mesh>
-        <mesh position={[0, 1.05, 0.01]}>
-          <circleGeometry args={[0.16, 24]} />
-          <meshStandardMaterial color="#ffd9a0" emissive="#ffc27a" emissiveIntensity={1.2} />
-        </mesh>
-      </group>
+    <group ref={g} position={p}>
+      {Array.from({ length: 8 }, (_, i) => (
+        <sprite key={i}>
+          <spriteMaterial map={tex} transparent depthWrite={false} />
+        </sprite>
+      ))}
     </group>
   );
 }
 
 function CafeScene({ lit, open, door }: HubRefs) {
-  const tiles = useMemo(mosaicTexture, []);
+  const moss = usePBR('forrest_ground_01', [5, 3]);
+  const plaster = usePBR('clay_plaster', [4, 2]);
+  const stone = usePBR('mossy_rock', [2, 1.2]);
+  const tiles = usePBR('old_mosaic_floor', [3, 3]);
   const front = useRef<THREE.Group>(null);
+  const hinge = useRef<THREE.Group>(null);
+  const windows = useRef<(THREE.MeshStandardMaterial | null)[]>([]);
   const lights = useRef<(THREE.PointLight | null)[]>([]);
-  const bulbs = useRef<(THREE.MeshStandardMaterial | null)[]>([]);
-  const glow = useGlow(lit, 0.45, 1);
+  const glow = useGlow(lit, 0.5, 1);
   useFade(front, open);
-  useFrame(({ clock }) => {
-    lights.current.forEach((l, i) => l && (l.intensity = 2.2 + glow.current * 2.2 + Math.sin(clock.elapsedTime * 2 + i) * 0.05));
-    bulbs.current.forEach((b) => b && (b.emissiveIntensity = 1.8 + glow.current * 2.5));
+  useFrame(() => {
+    if (hinge.current) hinge.current.rotation.y = door.current * 1.6;
+    windows.current.forEach((m) => m && (m.emissiveIntensity = 1.2 + glow.current * 1.6));
+    lights.current.forEach((l) => l && (l.intensity = 2.4 + glow.current * 2.4));
   });
-  const counterArc = [-0.75, -0.38, 0, 0.38, 0.75];
+
+  const { shell, face } = useMemo(() => {
+    const s = new THREE.SphereGeometry(CAFE_R, 80, 40, 0, Math.PI * 2, 0, Math.PI / 2);
+    s.scale(1, CAFE_SQUASH, 1);
+    const shell = filterTriangles(s, (c) => c.z < CAFE_FACE_Z);
+    // The flat front: a stone wall with a round door and two round windows.
+    const rx = Math.sqrt(CAFE_R * CAFE_R - CAFE_FACE_Z * CAFE_FACE_Z);
+    const ry = rx * CAFE_SQUASH * 1.25;
+    const sh = new THREE.Shape();
+    sh.absellipse(0, 0, rx, ry, 0, Math.PI, false);
+    sh.lineTo(-rx, 0);
+    const doorHole = new THREE.Path();
+    doorHole.absarc(0, 1.0, 0.82, 0, Math.PI * 2, true);
+    sh.holes.push(doorHole);
+    for (const x of [-1.9, 1.9]) {
+      const p = new THREE.Path();
+      p.absarc(x, 1.2, 0.42, 0, Math.PI * 2, true);
+      sh.holes.push(p);
+    }
+    const face = new THREE.ExtrudeGeometry(sh, { depth: 0.35, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 2, curveSegments: 48 });
+    const uv = face.attributes.uv as THREE.BufferAttribute;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / 3, uv.getY(i) / 3);
+    return { shell, face };
+  }, []);
+
+  const doorLeaf = useMemo(() => {
+    const c = new THREE.Shape();
+    c.absarc(0, 0, 0.8, 0, Math.PI * 2, false);
+    const g = new THREE.ExtrudeGeometry(c, { depth: 0.08, bevelEnabled: true, bevelThickness: 0.02, bevelSize: 0.02, bevelSegments: 2, curveSegments: 48 });
+    g.translate(0.8, 0, -0.04);
+    return g;
+  }, []);
+  const planks = useMemo(
+    () =>
+      canvasTexture(256, 256, (ctx) => {
+        ctx.fillStyle = '#3f6b4a';
+        ctx.fillRect(0, 0, 256, 256);
+        for (let x = 0; x < 256; x += 32) {
+          ctx.fillStyle = `rgba(0,0,0,${0.12 + (x % 64 ? 0.05 : 0)})`;
+          ctx.fillRect(x, 0, 3, 256);
+        }
+      }),
+    [],
+  );
+
+  const greenery = useMemo(() => {
+    const rand = seeded(12);
+    const out: { p: V3; r: number; s: number }[] = [];
+    for (let i = 0; i < 70; i++) {
+      const a = rand() * Math.PI * 2;
+      const rr = Math.sqrt(rand()) * CAFE_R * 0.92;
+      const x = Math.cos(a) * rr;
+      const z = Math.sin(a) * rr;
+      if (z > CAFE_FACE_Z - 0.3) continue;
+      const y = CAFE_SQUASH * Math.sqrt(Math.max(0, CAFE_R * CAFE_R - x * x - z * z));
+      out.push({ p: [x, y - 0.03, z], r: rand() * 6, s: 0.5 + rand() * 0.5 });
+    }
+    return out;
+  }, []);
+
+  const ribs = useMemo(
+    () =>
+      [-0.9, -0.3, 0.3, 0.9].map((a) => {
+        const pts = Array.from({ length: 20 }, (_, i) => {
+          const th = (i / 19) * Math.PI - Math.PI / 2;
+          const r = CAFE_R - 0.12;
+          return new THREE.Vector3(Math.sin(th) * r * Math.cos(a), Math.cos(th) * r * CAFE_SQUASH * 0.98, Math.sin(th) * r * Math.sin(a));
+        });
+        return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 40, 0.07, 8, false);
+      }),
+    [],
+  );
+
   return (
     <group>
-      {/* Floor and walls */}
-      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[CAFE_R - 0.05, 64]} />
-        <meshStandardMaterial map={tiles} roughness={0.55} />
+      {/* Earth mound, mossy and planted over */}
+      <mesh geometry={shell} castShadow receiveShadow>
+        <meshStandardMaterial {...moss} side={THREE.FrontSide} />
       </mesh>
-      <MossDome r={CAFE_R} squash={CAFE_SQUASH} inner="#efe0c8" front={cafeFront} />
+      <mesh geometry={shell} scale={0.985} receiveShadow>
+        <meshStandardMaterial {...plaster} side={THREE.BackSide} />
+      </mesh>
+      {greenery.map((g, i) => (
+        <Model key={i} name={i % 3 ? 'shrub_04' : 'fern_02'} position={g.p} rotation={[0, g.r, 0]} scale={i % 3 ? g.s * 1.6 : g.s * 0.6} />
+      ))}
+      <Cyl r={0.28} top={0.24} h={1.3} p={[1.6, CAFE_R * CAFE_SQUASH - 0.1, -0.8]} c="#8a8074" rough={0.9} />
+      <Smoke p={[1.6, CAFE_R * CAFE_SQUASH + 0.6, -0.8]} />
+
+      {/* Stone front with a round door and windows; it fades to let you in */}
       <group ref={front}>
-        <MossDomeFront r={CAFE_R} squash={CAFE_SQUASH} inner="#efe0c8" front={cafeFront} hole={cafeHole} />
-      </group>
-      {/* Round wooden door set in a stone arch */}
-      <group position={[0, 0, CAFE_R - 0.25]}>
-        <RoundDoor w={1.2} h={2.1} color="#7a5234" glass="#ffd9a0" door={door} glow="#ffcf8a" />
-      </group>
-      {/* A cup on the roof, stones around the base */}
-      <group position={[0.4, CAFE_R * CAFE_SQUASH - 0.05, 0]}>
-        <Cyl r={0.28} top={0.34} h={0.42} p={[0, 0.21, 0]} c="#f4efe7" rough={0.35} />
-        <mesh position={[0.36, 0.22, 0]} rotation={[0, 0, Math.PI / 2]}>
-          <torusGeometry args={[0.12, 0.035, 10, 20, Math.PI]} />
-          <meshStandardMaterial color="#f4efe7" roughness={0.35} />
+        <mesh geometry={face} position={[0, 0, CAFE_FACE_Z - 0.1]} castShadow receiveShadow>
+          <meshStandardMaterial {...stone} />
         </mesh>
-      </group>
-      <Stones r={CAFE_R + 0.15} count={26} seed={3} skipFront />
-
-      {/* Curved coffee bar with an ornate espresso machine and pastries */}
-      {counterArc.map((a) => {
-        const x = Math.sin(a) * 2.45;
-        const z = -Math.cos(a) * 2.45;
-        return (
-          <group key={a} position={[x, 0, z]} rotation={[0, -a, 0]}>
-            <B s={[0.95, 0.95, 0.55]} p={[0, 0.475, 0]} r={0.04} c="#6b4430" rough={0.5} />
-            <B s={[1.0, 0.05, 0.65]} p={[0, 0.975, 0.03]} r={0.02} c="#eee7de" rough={0.2} />
+        {[-1.9, 1.9].map((x, i) => (
+          <group key={x} position={[x, 1.2, CAFE_FACE_Z + 0.1]}>
+            <mesh>
+              <circleGeometry args={[0.42, 40]} />
+              <meshStandardMaterial ref={(m) => (windows.current[i] = m)} color="#ffe2b0" emissive="#ffb760" emissiveIntensity={1.4} roughness={0.2} />
+            </mesh>
+            <B s={[0.84, 0.04, 0.04]} p={[0, 0, 0.03]} r={0.01} c="#3f6b4a" />
+            <B s={[0.04, 0.84, 0.04]} p={[0, 0, 0.03]} r={0.01} c="#3f6b4a" />
+            <mesh position={[0, 0, 0.02]}>
+              <torusGeometry args={[0.44, 0.05, 10, 40]} />
+              <meshStandardMaterial color="#3f6b4a" roughness={0.6} />
+            </mesh>
           </group>
-        );
-      })}
-      <EspressoMachine p={[0, 1.0, -2.55]} />
-      <PastryCase p={[-0.95, 1.0, -2.25]} />
-      <Mug p={[0.8, 1.0, -2.3]} c="#f4efe7" steam={glow} />
-
-      {/* Mismatched vintage seating */}
-      <Armchair p={[1.45, 0, 0.35]} yaw={-0.75} color="#c9973e" />
-      <Armchair p={[-1.7, 0, 0.6]} yaw={0.7} color="#3f7470" />
-      <group position={[-1.2, 0, 1.9]} rotation={[0, 0.3, 0]}>
-        <RoundedBox args={[1.5, 0.3, 0.7]} radius={0.12} smoothness={4} position={[0, 0.34, 0]} castShadow>
-          <meshPhysicalMaterial color="#b76e6e" roughness={0.9} sheen={1} sheenColor="#ffd9d9" />
-        </RoundedBox>
-        <RoundedBox args={[1.5, 0.55, 0.2]} radius={0.1} smoothness={4} position={[0, 0.66, -0.28]} castShadow>
-          <meshPhysicalMaterial color="#b76e6e" roughness={0.9} sheen={1} sheenColor="#ffd9d9" />
-        </RoundedBox>
-      </group>
-      <group position={[0.55, 0, 0.9]}>
-        <Cyl r={0.36} h={0.04} p={[0, 0.55, 0]} c="#7a5234" rough={0.4} />
-        <Cyl r={0.03} h={0.53} p={[0, 0.27, 0]} c="#3b2a1f" rough={0.5} />
-        <Mug p={[0.05, 0.57, -0.1]} c="#f4efe7" steam={glow} />
-        <mesh position={[-0.15, 0.6, 0.12]} rotation={[Math.PI / 2, 0, 0.5]} castShadow>
-          <torusGeometry args={[0.08, 0.035, 10, 20, Math.PI * 1.2]} />
-          <meshStandardMaterial color="#d59a55" roughness={0.6} />
+        ))}
+        <mesh position={[0, 1.0, CAFE_FACE_Z + 0.26]}>
+          <torusGeometry args={[0.86, 0.07, 12, 56]} />
+          <meshStandardMaterial color="#6b4a2e" roughness={0.6} />
         </mesh>
+        <group ref={hinge} position={[-0.8, 1.0, CAFE_FACE_Z + 0.2]}>
+          <mesh geometry={doorLeaf} castShadow>
+            <meshStandardMaterial map={planks} roughness={0.6} />
+          </mesh>
+          <mesh position={[0.8, 0, 0.08]} castShadow>
+            <sphereGeometry args={[0.07, 20, 20]} />
+            <meshStandardMaterial color="#c8a36a" metalness={0.95} roughness={0.2} />
+          </mesh>
+        </group>
       </group>
-      <group position={[-0.5, 0, -0.4]}>
-        <Cyl r={0.3} h={0.04} p={[0, 0.7, 0]} c="#e9e2d6" rough={0.3} />
-        <Cyl r={0.025} h={0.68} p={[0, 0.34, 0]} c="#2b2b2b" metal={0.5} rough={0.4} />
+      <mesh position={[0, 1.0, CAFE_FACE_Z - 0.3]}>
+        <circleGeometry args={[0.82, 40]} />
+        <meshBasicMaterial color="#ffc27a" toneMapped={false} />
+      </mesh>
+      <group position={[1.35, 0, CAFE_FACE_Z + 0.9]}>
+        <Cyl r={0.04} h={2.1} p={[0, 1.05, 0]} c="#3a302a" rough={0.5} />
+        <B s={[0.5, 0.05, 0.05]} p={[-0.22, 2.05, 0]} r={0.015} c="#3a302a" />
+        <Model name="caged_hanging_light" position={[-0.42, 2.02, 0]} scale={0.8} />
+        <pointLight position={[-0.42, 1.6, 0]} color="#ffb46a" intensity={2} distance={4} decay={1.6} />
       </group>
-      <B s={[2.8, 0.02, 2.0]} p={[0, 0.03, 0.9]} r={0.01} c="#b9876a" rough={1} shadow={false} />
+      <Model name="rock_moss_set_01" position={[-CAFE_R + 0.2, 0, 1.8]} rotation={[0, 0.8, 0]} scale={0.32} />
 
-      {/* Plants everywhere, some hanging */}
-      <Plant p={[2.6, 0, -1.2]} s={1.4} pot="#c47a5a" />
-      <Plant p={[-2.7, 0, -1.0]} s={1.5} pot="#e8dfd2" />
-      <Plant p={[2.4, 0, 1.9]} s={1.0} pot="#6d9b8f" />
-      {[-1.4, 1.3].map((x) => (
-        <group key={x} position={[x, 0, -1.0]}>
-          <Cyl r={0.006} h={0.8} p={[0, 2.55, 0]} c="#3b2f2a" />
-          <Plant p={[0, 1.85, 0]} s={0.55} pot="#e8dfd2" />
+      {/* Inside: wooden ribs, mosaic floor, coffee cart, vintage seats */}
+      {ribs.map((g, i) => (
+        <mesh key={i} geometry={g} castShadow>
+          <meshStandardMaterial color="#6b4a2e" roughness={0.7} />
+        </mesh>
+      ))}
+      <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <circleGeometry args={[CAFE_R - 0.1, 72]} />
+        <meshStandardMaterial {...tiles} />
+      </mesh>
+      <Model name="CoffeeCart_01" position={[0.3, 0, -2.6]} rotation={[0, 0.05, 0]} scale={1.05} />
+      <Model name="ArmChair_01" position={[1.35, 0, 0.35]} rotation={[0, -0.75 + Math.PI, 0]} />
+      <Model name="ArmChair_01" position={[-1.9, 0, 0.1]} rotation={[0, 0.9 + Math.PI, 0]} tint="#8fa8a0" />
+      <Model name="Sofa_01" position={[-1.2, 0, 2.0]} rotation={[0, Math.PI + 0.3, 0]} />
+      <Model name="coffee_table_round_01" position={[0.35, 0, 0.9]} scale={0.75} />
+      <Model name="round_wooden_table_01" position={[-1.6, 0, -1.3]} scale={0.8} />
+      <Mug p={[0.45, 0.37, 0.8]} c="#f4efe7" steam={glow} />
+      <Model name="potted_plant_02" position={[2.7, 0, -1.4]} rotation={[0, 1.2, 0]} scale={1.3} />
+      <Model name="potted_plant_02" position={[-3.0, 0, -0.6]} scale={1.1} />
+      <Model name="potted_plant_04" position={[-1.6, 0.8, -1.3]} scale={1.3} />
+      {[-1.1, 0.2, 1.4].map((x, i) => (
+        <group key={x} position={[x, CAFE_R * CAFE_SQUASH - 0.35, -0.8 + (i % 2) * 0.9]}>
+          <Model name="caged_hanging_light" position={[0, 0, 0]} scale={0.7} />
+          <pointLight ref={(l) => (lights.current[i] = l)} position={[0, -0.45, 0]} color="#ffbf74" intensity={2.4} distance={4.5} decay={1.5} />
         </group>
       ))}
-
-      {/* Warm pendants */}
-      {[-0.9, 0, 0.9].map((x, i) => (
-        <group key={x} position={[x, 0, -1.7 + Math.abs(x) * 0.3]}>
-          <Cyl r={0.006} h={0.7} p={[0, 2.65, 0]} c="#3b2f2a" />
-          <mesh position={[0, 2.25, 0]} castShadow>
-            <sphereGeometry args={[0.17, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2]} />
-            <meshStandardMaterial color="#b8733f" metalness={0.8} roughness={0.3} side={THREE.DoubleSide} />
-          </mesh>
-          <mesh position={[0, 2.21, 0]}>
-            <sphereGeometry args={[0.05, 16, 16]} />
-            <meshStandardMaterial ref={(m) => (bulbs.current[i] = m)} color="#fff4dc" emissive="#ffcf8a" emissiveIntensity={2} toneMapped={false} />
-          </mesh>
-          <pointLight ref={(l) => (lights.current[i] = l)} position={[0, 2.05, 0]} color="#ffbf74" intensity={2.4} distance={4} decay={1.5} />
-        </group>
-      ))}
-      <pointLight position={[0, 1.4, CAFE_R - 0.3]} color="#ffcf8a" intensity={2} distance={3} />
-
-      <CupCottage p={[-5.6, 0, 2.2]} yaw={0.5} />
     </group>
   );
 }
 
 /* ------------------------------ Developer room ----------------------------- */
+// A sleek metal pod with fibre-optic veins pulsing across its skin.
 
-const DEV_R = 3.9;
-const DEV_SQUASH = 0.76;
-const DEV_FACE_Z = 2.35;
-const devFront = (c: THREE.Vector3) => c.z > DEV_FACE_Z;
+const DEV_R = 4.0;
+const DEV_SQUASH = 0.72;
+const DEV_FACE_Z = 2.5;
 
-function codeTexture() {
-  const rand = seeded(23);
-  const tex = canvasTexture(256, 512, (ctx) => {
-    ctx.fillStyle = '#04110a';
+function veinTexture() {
+  const rand = seeded(61);
+  const t = canvasTexture(1024, 512, (ctx) => {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, 1024, 512);
+    ctx.lineCap = 'round';
+    const branch = (x: number, y: number, a: number, len: number, w: number, depth: number) => {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = w;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      let cx = x;
+      let cy = y;
+      for (let i = 0; i < 6; i++) {
+        a += (rand() - 0.5) * 0.5;
+        cx += Math.cos(a) * (len / 6);
+        cy += Math.sin(a) * (len / 6);
+        ctx.lineTo(cx, cy);
+      }
+      ctx.stroke();
+      if (depth > 0) for (let k = 0; k < 2; k++) branch(cx, cy, a + (rand() - 0.5) * 1.4, len * 0.6, w * 0.65, depth - 1);
+    };
+    for (let i = 0; i < 14; i++) branch(rand() * 1024, 512, -Math.PI / 2 + (rand() - 0.5) * 0.6, 220 + rand() * 120, 4, 3);
+  });
+  t.colorSpace = THREE.NoColorSpace;
+  t.wrapS = THREE.RepeatWrapping;
+  return t;
+}
+
+// Additive glow layer: light pulses travel up the veins.
+function VeinLayer({ geo, lit }: { geo: THREE.BufferGeometry; lit: React.MutableRefObject<number> }) {
+  const tex = useMemo(veinTexture, []);
+  const mat = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        uniforms: { tVein: { value: tex }, uTime: wind, uLit: { value: 0 } },
+        vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: `uniform sampler2D tVein; uniform float uTime; uniform float uLit; varying vec2 vUv;
+          void main() {
+            float v = texture2D(tVein, vec2(vUv.x * 2.0, vUv.y)).r;
+            float pulse = pow(0.5 + 0.5 * sin((vUv.y * 14.0 - uTime * 2.2) + vUv.x * 30.0), 6.0);
+            vec3 col = vec3(0.35, 0.9, 1.0) * v * (0.25 + pulse * (1.4 + uLit * 1.6));
+            gl_FragColor = vec4(col, 1.0);
+          }`,
+      }),
+    [tex],
+  );
+  useFrame(() => {
+    mat.uniforms.uLit.value = lit.current;
+  });
+  return <mesh geometry={geo} material={mat} scale={1.004} />;
+}
+
+function codeTexture(seed: number) {
+  const rand = seeded(seed);
+  const t = canvasTexture(256, 512, (ctx) => {
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, 256, 512);
     for (let y = 8; y < 512; y += 14) {
       let x = 8 + Math.floor(rand() * 3) * 14;
@@ -669,63 +593,8 @@ function codeTexture() {
       }
     }
   });
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  return tex;
-}
-
-function circuitTexture() {
-  const rand = seeded(41);
-  return canvasTexture(
-    512,
-    512,
-    (ctx) => {
-      ctx.fillStyle = '#8a929b';
-      ctx.fillRect(0, 0, 512, 512);
-      ctx.strokeStyle = '#5e666f';
-      ctx.lineWidth = 3;
-      for (let i = 0; i < 70; i++) {
-        let x = rand() * 512;
-        let y = rand() * 512;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        for (let s = 0; s < 4; s++) {
-          if (rand() > 0.5) x += (rand() - 0.5) * 140;
-          else y += (rand() - 0.5) * 140;
-          ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-        ctx.fillStyle = '#4c535b';
-        ctx.beginPath();
-        ctx.arc(x, y, 5, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    },
-    [1, 1],
-  );
-}
-
-function circuitGlow() {
-  const rand = seeded(41);
-  return canvasTexture(512, 512, (ctx) => {
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, 512, 512);
-    ctx.strokeStyle = '#7de7f0';
-    ctx.lineWidth = 2;
-    for (let i = 0; i < 70; i++) {
-      let x = rand() * 512;
-      let y = rand() * 512;
-      ctx.globalAlpha = rand() > 0.6 ? 0.9 : 0;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      for (let s = 0; s < 4; s++) {
-        if (rand() > 0.5) x += (rand() - 0.5) * 140;
-        else y += (rand() - 0.5) * 140;
-        ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
-  });
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
 }
 
 function Keyboard({ p, yaw = 0, keys }: { p: V3; yaw?: number; keys: string }) {
@@ -733,22 +602,18 @@ function Keyboard({ p, yaw = 0, keys }: { p: V3; yaw?: number; keys: string }) {
   const cols = 14;
   const rows = 4;
   useLayoutEffect(() => {
-    {
-      const m = new THREE.Matrix4();
-      const c = new THREE.Color(keys);
-      const accent = new THREE.Color('#e8e4dc');
-      for (let r = 0; r < rows; r++)
-        for (let k = 0; k < cols; k++) {
-          const i = r * cols + k;
-          m.makeTranslation(-0.2 + k * 0.03, 0.022, -0.05 + r * 0.03);
-          ref.current?.setMatrixAt(i, m);
-          ref.current?.setColorAt(i, (k + r) % 5 === 0 ? accent : c);
-        }
-      if (ref.current) {
-        ref.current.instanceMatrix.needsUpdate = true;
-        if (ref.current.instanceColor) ref.current.instanceColor.needsUpdate = true;
+    const m = new THREE.Matrix4();
+    const c = new THREE.Color(keys);
+    const accent = new THREE.Color('#e8e4dc');
+    for (let r = 0; r < rows; r++)
+      for (let k = 0; k < cols; k++) {
+        const i = r * cols + k;
+        m.makeTranslation(-0.2 + k * 0.03, 0.022, -0.05 + r * 0.03);
+        ref.current!.setMatrixAt(i, m);
+        ref.current!.setColorAt(i, (k + r) % 5 === 0 ? accent : c);
       }
-    }
+    ref.current!.instanceMatrix.needsUpdate = true;
+    if (ref.current!.instanceColor) ref.current!.instanceColor.needsUpdate = true;
   }, [keys]);
   return (
     <group position={p} rotation={[0, yaw, 0]}>
@@ -761,83 +626,120 @@ function Keyboard({ p, yaw = 0, keys }: { p: V3; yaw?: number; keys: string }) {
   );
 }
 
+// A monitor with two code layers a few millimetres apart: the back layer
+// scrolls slowly, the front one faster, so the text reads with depth.
+function Monitor({ p, yaw, index, layers, glow }: { p: V3; yaw: number; index: number; layers: [THREE.Texture, THREE.Texture]; glow: React.MutableRefObject<number> }) {
+  const back = useRef<THREE.MeshBasicMaterial>(null);
+  const texs = useMemo(
+    () =>
+      layers.map((l, k) => {
+        const t = l.clone();
+        t.needsUpdate = true;
+        t.repeat.set(1, k ? 0.5 : 0.8);
+        t.offset.set(0, (index * 0.37 + k * 0.5) % 1);
+        return t;
+      }),
+    [layers, index],
+  );
+  useFrame((_, dt) => {
+    const speed = 1 + glow.current;
+    texs[0].offset.y = (texs[0].offset.y + dt * 0.02 * speed) % 1;
+    texs[1].offset.y = (texs[1].offset.y + dt * (0.06 + (index % 3) * 0.015) * speed) % 1;
+    if (back.current) back.current.opacity = 0.45 + glow.current * 0.2;
+  });
+  return (
+    <group position={p} rotation={[0, yaw, 0]}>
+      <B s={[0.82, 0.52, 0.05]} p={[0, 0, 0]} r={0.015} c="#0f1216" metal={0.5} rough={0.35} />
+      <mesh position={[0, 0, 0.027]}>
+        <planeGeometry args={[0.76, 0.46]} />
+        <meshBasicMaterial color="#021208" />
+      </mesh>
+      <mesh position={[0, 0, 0.03]}>
+        <planeGeometry args={[0.76, 0.46]} />
+        <meshBasicMaterial ref={back} map={texs[0]} transparent blending={THREE.AdditiveBlending} color="#3f8f5a" toneMapped={false} depthWrite={false} />
+      </mesh>
+      <mesh position={[0, 0, 0.038]}>
+        <planeGeometry args={[0.76, 0.46]} />
+        <meshBasicMaterial map={texs[1]} transparent opacity={0.9} blending={THREE.AdditiveBlending} color="#b8ffc8" toneMapped={false} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
+
 function DevScene({ lit, open, door }: HubRefs) {
-  const code = useMemo(codeTexture, []);
-  const screens = useMemo(() => Array.from({ length: 14 }, (_, i) => {
-    const t = code.clone();
-    t.needsUpdate = true;
-    t.offset.set(0, (i * 0.37) % 1);
-    t.repeat.set(1, 0.55);
-    return t;
-  }), [code]);
-  const faceMap = useMemo(circuitTexture, []);
-  const faceGlow = useMemo(circuitGlow, []);
+  const metal = usePBR('metal_plate', [4, 2]);
+  const layers = useMemo(() => [codeTexture(23), codeTexture(57)] as [THREE.Texture, THREE.Texture], []);
   const front = useRef<THREE.Group>(null);
   const slide = useRef<THREE.Group>(null);
-  const screenMats = useRef<(THREE.MeshStandardMaterial | null)[]>([]);
   const ring = useRef<THREE.MeshStandardMaterial>(null);
   const blue = useRef<THREE.PointLight>(null);
   const glow = useGlow(lit, 0.4, 1);
   useFade(front, open);
-  useFrame((_, dt) => {
-    // Code scrolls up every screen at slightly different speeds.
-    screens.forEach((t, i) => (t.offset.y = (t.offset.y + dt * (0.04 + (i % 4) * 0.012) * (1 + glow.current)) % 1));
-    screenMats.current.forEach((m) => m && (m.emissiveIntensity = 1.1 + glow.current * 0.8));
+  useFrame(() => {
     if (ring.current) ring.current.emissiveIntensity = 1.5 + glow.current * 2;
     if (blue.current) blue.current.intensity = 3 + glow.current * 3;
-    if (slide.current) slide.current.position.x = door.current * 1.1;
+    if (slide.current) slide.current.position.x = door.current * 1.2;
   });
+  const { shell, face } = useMemo(() => {
+    const s = new THREE.SphereGeometry(DEV_R, 96, 48, 0, Math.PI * 2, 0, Math.PI / 2);
+    s.scale(1.18, DEV_SQUASH, 1);
+    const shell = filterTriangles(s, (c) => c.z < DEV_FACE_Z);
+    const k = Math.sqrt(1 - (DEV_FACE_Z / DEV_R) ** 2) * DEV_R;
+    const rx = k * 1.18;
+    const ry = k * DEV_SQUASH;
+    const sh = new THREE.Shape();
+    sh.absellipse(0, 0, rx, ry, 0, Math.PI, false);
+    sh.lineTo(-rx, 0);
+    sh.holes.push(new THREE.Path(archShape(1.3, 2.2).getPoints(40)));
+    const face = new THREE.ExtrudeGeometry(sh, { depth: 0.14, bevelEnabled: true, bevelThickness: 0.02, bevelSize: 0.02, bevelSegments: 2, curveSegments: 64 });
+    const uv = face.attributes.uv as THREE.BufferAttribute;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / (rx * 2) + 0.5, uv.getY(i) / (rx * 2));
+    return { shell, face };
+  }, []);
 
-  // Monitors line the curved back wall in two rows.
   const monitors = useMemo(() => {
     const out: { p: V3; yaw: number }[] = [];
     for (let row = 0; row < 2; row++)
       for (let k = 0; k < 7; k++) {
-        const a = -1.05 + (k / 6) * 2.1;
-        const r = 3.05 - row * 0.12;
-        out.push({ p: [Math.sin(a) * r, 1.35 + row * 0.72, -Math.cos(a) * r], yaw: -a });
+        const a = -1.0 + (k / 6) * 2.0;
+        const r = 3.35 - row * 0.12;
+        out.push({ p: [Math.sin(a) * r * 1.1, 1.35 + row * 0.72, -Math.cos(a) * r], yaw: -a });
       }
     return out;
   }, []);
 
-  const face = useMemo(() => {
-    const rx = Math.sqrt(DEV_R * DEV_R - DEV_FACE_Z * DEV_FACE_Z);
-    const ry = rx * DEV_SQUASH;
-    const s = new THREE.Shape();
-    s.absellipse(0, 0, rx, ry, 0, Math.PI, false);
-    s.lineTo(-rx, 0);
-    s.holes.push(new THREE.Path(archShape(1.25, 2.15).getPoints(40)));
-    const g = new THREE.ExtrudeGeometry(s, { depth: 0.14, bevelEnabled: true, bevelThickness: 0.02, bevelSize: 0.02, bevelSegments: 2, curveSegments: 64 });
-    const uv = g.attributes.uv as THREE.BufferAttribute;
-    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / (rx * 2) + 0.5, uv.getY(i) / (rx * 2));
-    return g;
-  }, []);
-
   return (
     <group>
-      <mesh position={[0, 0.02, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[DEV_R - 0.05, 64]} />
-        <meshStandardMaterial color="#1b2029" roughness={0.45} metalness={0.2} />
+      <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <circleGeometry args={[DEV_R, 72]} />
+        <meshStandardMaterial color="#161b24" metalness={0.5} roughness={0.35} />
       </mesh>
-      <mesh position={[0, 0.03, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+      <mesh position={[0, 0.04, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <ringGeometry args={[DEV_R - 0.35, DEV_R - 0.3, 96]} />
         <meshStandardMaterial ref={ring} color="#111" emissive="#4fb3ff" emissiveIntensity={1.5} toneMapped={false} />
       </mesh>
-      <MossDome r={DEV_R} squash={DEV_SQUASH} inner="#151b24" front={devFront} />
 
-      {/* The metal circuit facade with a sliding, glowing door */}
+      {/* Brushed metal skin with pulsing fibre-optic veins */}
+      <mesh geometry={shell} castShadow receiveShadow>
+        <meshStandardMaterial {...metal} metalness={1} roughness={0.35} envMapIntensity={1.3} />
+      </mesh>
+      <VeinLayer geo={shell} lit={lit} />
+      <mesh geometry={shell} scale={0.985}>
+        <meshStandardMaterial color="#121821" roughness={0.6} side={THREE.BackSide} />
+      </mesh>
+
       <group ref={front}>
         <mesh geometry={face} position={[0, 0, DEV_FACE_Z]} castShadow receiveShadow>
-          <meshStandardMaterial map={faceMap} emissiveMap={faceGlow} emissive="#7de7f0" emissiveIntensity={0.9} metalness={0.7} roughness={0.35} />
+          <meshStandardMaterial {...metal} metalness={1} roughness={0.3} />
         </mesh>
-        <mesh position={[0, 1.075, DEV_FACE_Z + 0.02]}>
-          <planeGeometry args={[1.25, 2.15]} />
+        <mesh position={[0, 1.1, DEV_FACE_Z + 0.02]}>
+          <planeGeometry args={[1.3, 2.2]} />
           <meshBasicMaterial color="#7fe6ff" toneMapped={false} />
         </mesh>
         <group ref={slide} position={[0, 0, DEV_FACE_Z + 0.2]}>
-          <mesh position={[0, 0, 0]}>
-            <extrudeGeometry args={[archShape(1.2, 2.1), { depth: 0.05, bevelEnabled: false, curveSegments: 40 }]} />
-            <meshStandardMaterial color="#5e666f" metalness={0.8} roughness={0.3} />
+          <mesh>
+            <extrudeGeometry args={[archShape(1.25, 2.15), { depth: 0.05, bevelEnabled: false, curveSegments: 40 }]} />
+            <meshStandardMaterial color="#5e666f" metalness={1} roughness={0.25} />
           </mesh>
           <mesh position={[0, 1.2, 0.06]}>
             <planeGeometry args={[0.8, 1.3]} />
@@ -845,27 +747,20 @@ function DevScene({ lit, open, door }: HubRefs) {
           </mesh>
         </group>
       </group>
-      <Stones r={DEV_R + 0.15} count={24} seed={9} skipFront />
+      <Stones r={DEV_R * 1.12} count={22} seed={9} skipFront />
 
-      {/* A curved wall of monitors, streaming green code */}
       {monitors.map((m, i) => (
-        <group key={i} position={m.p} rotation={[0, m.yaw, 0]}>
-          <B s={[0.82, 0.52, 0.05]} p={[0, 0, 0]} r={0.015} c="#0f1216" metal={0.4} rough={0.4} />
-          <mesh position={[0, 0, 0.028]}>
-            <planeGeometry args={[0.76, 0.46]} />
-            <meshStandardMaterial ref={(mm) => (screenMats.current[i] = mm)} map={screens[i]} emissiveMap={screens[i]} emissive="#ffffff" emissiveIntensity={1.2} toneMapped={false} />
-          </mesh>
-        </group>
+        <Monitor key={i} p={m.p} yaw={m.yaw} index={i} layers={layers} glow={glow} />
       ))}
-      <pointLight position={[0, 1.8, -1.6]} color="#5cff9a" intensity={2.2} distance={4.5} decay={1.6} />
+      <pointLight position={[0, 1.8, -1.8]} color="#5cff9a" intensity={2.2} distance={4.5} decay={1.6} />
       <pointLight ref={blue} position={[0, 2.4, 0.4]} color="#5aa7ff" intensity={3} distance={6} decay={1.5} />
 
-      {/* Standing desks with mechanical keyboards */}
+      {/* Standing desks, keyboards and a duck */}
       {[
         { x: -0.9, yaw: 0.25 },
         { x: 0.9, yaw: -0.25 },
       ].map((d) => (
-        <group key={d.x} position={[d.x, 0, -1.3]} rotation={[0, d.yaw, 0]}>
+        <group key={d.x} position={[d.x, 0, -1.4]} rotation={[0, d.yaw, 0]}>
           <B s={[1.3, 0.05, 0.6]} p={[0, 0.88, 0]} r={0.02} c="#2b2f36" metal={0.3} rough={0.4} />
           {[-0.55, 0.55].map((x) => (
             <B key={x} s={[0.06, 0.86, 0.5]} p={[x, 0.43, 0]} r={0.02} c="#15181d" metal={0.6} rough={0.35} />
@@ -873,86 +768,35 @@ function DevScene({ lit, open, door }: HubRefs) {
           <Keyboard p={[0, 0.905, 0.1]} keys={d.x < 0 ? '#e8c77a' : '#9db4ff'} />
         </group>
       ))}
-
-      {/* Keyboard collection on a wall shelf */}
-      <group position={[-2.55, 1.1, 1.0]} rotation={[0, Math.PI / 2 + 0.45, 0]}>
-        <B s={[1.5, 0.04, 0.3]} p={[0, 0, 0]} r={0.01} c="#3a3f48" rough={0.5} />
-        {['#f0a8a0', '#7dd3c0', '#c7b6f2'].map((c, i) => (
-          <Keyboard key={c} p={[-0.48 + i * 0.48, 0.02, 0]} keys={c} />
-        ))}
-      </group>
+      <Model name="rubber_duck_toy" position={[-1.3, 0.905, -1.3]} rotation={[0, 0.6, 0]} scale={0.6} />
 
       {/* Circuit boards under glass */}
-      <group position={[-1.5, 0, 0.9]} rotation={[0, 0.5, 0]}>
+      <group position={[-1.7, 0, 0.9]} rotation={[0, 0.5, 0]}>
         <B s={[1.1, 0.7, 0.7]} p={[0, 0.35, 0]} r={0.03} c="#1f242c" metal={0.4} rough={0.4} />
-        {[
-          [-0.25, 0.1],
-          [0.2, -0.1],
-          [0.25, 0.18],
-        ].map(([x, z], i) => (
-          <group key={i} position={[x, 0.71, z]} rotation={[0, i * 0.4, 0]}>
-            <B s={[0.36, 0.015, 0.24]} p={[0, 0, 0]} r={0.004} c="#1f6b3a" rough={0.5} />
-            <mesh position={[0.08, 0.012, 0.05]}>
-              <sphereGeometry args={[0.012, 8, 8]} />
-              <meshStandardMaterial color="#ff5a5a" emissive="#ff5a5a" emissiveIntensity={3} toneMapped={false} />
-            </mesh>
-            <B s={[0.06, 0.02, 0.06]} p={[-0.06, 0.015, -0.03]} r={0.004} c="#15171b" />
-          </group>
-        ))}
-        <mesh position={[0, 0.76, 0]}>
+        <Model name="circuit_board" position={[-0.15, 0.7, 0]} scale={1.2} />
+        <Model name="circuit_board" position={[0.25, 0.7, 0.05]} rotation={[0, 1.2, 0]} scale={1} />
+        <mesh position={[0, 0.8, 0]}>
           <boxGeometry args={[1.08, 0.02, 0.68]} />
-          <meshPhysicalMaterial color="#ffffff" transparent opacity={0.15} roughness={0.03} envMapIntensity={2} depthWrite={false} />
+          <meshPhysicalMaterial color="#ffffff" transmission={1} ior={1.5} thickness={0.02} roughness={0.03} transparent />
         </mesh>
       </group>
 
-      {/* Hardware workshop corner */}
-      <group position={[2.3, 0, 0.6]} rotation={[0, -Math.PI / 2 - 0.35, 0]}>
+      {/* Hardware workshop */}
+      <group position={[2.4, 0, 0.5]} rotation={[0, -Math.PI / 2 - 0.35, 0]}>
         <B s={[1.5, 0.06, 0.6]} p={[0, 0.82, 0]} r={0.02} c="#8a6446" rough={0.6} />
         {[-0.65, 0.65].map((x) => (
           <B key={x} s={[0.06, 0.8, 0.5]} p={[x, 0.4, 0]} r={0.02} c="#2b2f36" metal={0.5} />
         ))}
-        <B s={[1.5, 0.8, 0.03]} p={[0, 1.4, -0.3]} r={0.01} c="#c9b28f" rough={0.9} />
-        {[-0.5, -0.3, -0.1].map((x, i) => (
-          <Cyl key={x} r={0.012} h={0.25} p={[x, 1.45, -0.26]} c={['#d9534f', '#e8c77a', '#5aa7ff'][i]} rough={0.4} />
-        ))}
-        <B s={[0.28, 0.12, 0.2]} p={[0.35, 0.91, 0]} r={0.02} c="#23262c" />
-        <mesh position={[0.3, 0.92, 0.105]}>
-          <circleGeometry args={[0.015, 12]} />
-          <meshStandardMaterial color="#ff5a5a" emissive="#ff5a5a" emissiveIntensity={3} toneMapped={false} />
-        </mesh>
-        {[0, 1, 2].map((i) => (
-          <B key={i} s={[0.16, 0.08, 0.14]} p={[-0.45 + i * 0.18, 0.89, 0.12]} r={0.02} c={['#5aa7ff', '#7dd3c0', '#e8c77a'][i]} rough={0.4} />
-        ))}
-        <group position={[0.05, 0.85, 0]}>
-          <Cyl r={0.012} h={0.5} p={[0, 0.25, 0]} rot={[0, 0, 0.3]} c="#2b2f36" metal={0.6} />
-          <mesh position={[-0.12, 0.5, 0.05]} rotation={[0.5, 0, 0]}>
-            <torusGeometry args={[0.08, 0.012, 8, 24]} />
-            <meshStandardMaterial color="#2b2f36" metalness={0.6} roughness={0.3} />
-          </mesh>
-        </group>
+        <Model name="retro_multimeter" position={[0.35, 0.85, 0]} />
+        <Model name="circuit_board" position={[-0.3, 0.85, 0.05]} scale={0.8} />
       </group>
+      <Model name="tool_cart" position={[2.0, 0, -0.9]} rotation={[0, -1.2, 0]} />
+      <Model name="metal_stool_01" position={[1.6, 0, 0.9]} />
+      {[-0.9, 0.9].map((x) => (
+        <Model key={x} name="hanging_industrial_lamp" position={[x, DEV_R * DEV_SQUASH - 0.25, -0.9]} scale={0.8} />
+      ))}
       <Sparkles count={20} scale={[5, 2, 5]} position={[0, 1.5, 0]} size={2} speed={0.2} color="#7de7f0" />
     </group>
-  );
-}
-
-function Stones({ r, count, seed, skipFront }: { r: number; count: number; seed: number; skipFront?: boolean }) {
-  const stones = useMemo(() => {
-    const rand = seeded(seed);
-    return Array.from({ length: count }, (_, i) => {
-      const a = (i / count) * Math.PI * 2 + rand() * 0.1;
-      return { a, s: 0.2 + rand() * 0.18, x: Math.cos(a) * r, z: Math.sin(a) * r, tilt: rand() };
-    }).filter((st) => !(skipFront && st.z > r * 0.8 && Math.abs(st.x) < 1.3));
-  }, [r, count, seed, skipFront]);
-  return (
-    <>
-      {stones.map((st, i) => (
-        <mesh key={i} position={[st.x, st.s * 0.35, st.z]} rotation={[st.tilt, st.a, 0]} scale={[st.s * 1.4, st.s * 0.8, st.s]} castShadow receiveShadow>
-          <dodecahedronGeometry args={[1, 1]} />
-          <meshStandardMaterial color="#9d968a" roughness={0.9} />
-        </mesh>
-      ))}
-    </>
   );
 }
 
@@ -968,20 +812,21 @@ export const ROOMS: RoomDef[] = [
     activity: 'type',
     pose: 'sit',
     icon: 'office',
-    position: [-6.8, 0, -2.6],
+    position: [-6.9, 0, -2.8],
     rotation: 0.5,
-    labelY: 4.0,
-    doorstep: [0, 0, 3.8],
-    entry: [0, 0, 2.0],
+    footprint: OFFICE_R + 0.8,
+    labelY: OFFICE_R + 0.6,
+    doorstep: [0, 0, OFFICE_R + 1.1],
+    entry: [0, 0, OFFICE_R - 1.2],
     approach: [
-      [2.9, 0, 1.4],
-      [2.9, 0, -0.5],
-      [1.7, 0, -0.45],
+      [2.5, 0, 1.6],
+      [2.5, 0, -0.4],
+      [1.4, 0, -0.35],
     ],
-    seat: { position: [1.7, 0.34, -0.45], yaw: 0 },
-    focus: [1.75, 1.0, 0.3],
-    camera: { position: [-0.85, 1.9, 2.45], look: [1.0, 1.0, -0.55] },
-    arrival: { position: [-1.6, 1.9, 8.6], look: [0, 1.2, 2.2] },
+    seat: { position: [1.4, 0.34, -0.35], yaw: 0 },
+    focus: [1.45, 0.95, 0.5],
+    camera: { position: [-0.9, 1.9, 2.9], look: [0.9, 1.0, -0.4] },
+    arrival: { position: [-1.4, 2.0, 9.2], look: [0, 1.4, OFFICE_R - 0.5] },
     Scene: OfficeScene,
   },
   {
@@ -993,19 +838,20 @@ export const ROOMS: RoomDef[] = [
     activity: 'sip',
     pose: 'sit',
     icon: 'cafe',
-    position: [5.2, 0, -5.0],
+    position: [5.4, 0, -5.2],
     rotation: -0.4,
-    labelY: 4.1,
-    doorstep: [0, 0, CAFE_R + 1.2],
-    entry: [0, 0, CAFE_R - 1.1],
+    footprint: CAFE_R + 0.8,
+    labelY: CAFE_R * CAFE_SQUASH + 1.3,
+    doorstep: [0, 0, CAFE_FACE_Z + 1.3],
+    entry: [0, 0, CAFE_FACE_Z - 1.0],
     approach: [
-      [0.9, 0, 1.6],
-      [1.45, 0, 0.45],
+      [0.9, 0, 1.2],
+      [1.35, 0, 0.8],
     ],
-    seat: { position: [1.45, 0.3, 0.35], yaw: -0.75 },
-    focus: [0.6, 0.65, 0.8],
-    camera: { position: [-0.9, 1.75, 2.55], look: [0.55, 0.95, -0.2] },
-    arrival: { position: [-1.6, 1.9, 9.2], look: [0, 1.2, CAFE_R - 0.4] },
+    seat: { position: [1.35, 0.34, 0.35], yaw: -0.75 },
+    focus: [0.45, 0.5, 0.8],
+    camera: { position: [-0.9, 1.7, 2.4], look: [0.6, 0.95, -0.1] },
+    arrival: { position: [-1.5, 1.9, 9.6], look: [0, 1.2, CAFE_FACE_Z] },
     Scene: CafeScene,
   },
   {
@@ -1017,19 +863,20 @@ export const ROOMS: RoomDef[] = [
     activity: 'type',
     pose: 'stand',
     icon: 'dev',
-    position: [6.8, 0, 2.6],
+    position: [7.0, 0, 2.8],
     rotation: -1.2,
-    labelY: 3.6,
+    footprint: DEV_R * 1.18 + 0.8,
+    labelY: DEV_R * DEV_SQUASH + 1.1,
     doorstep: [0, 0, DEV_FACE_Z + 1.4],
     entry: [0, 0, DEV_FACE_Z - 0.9],
     approach: [
       [0.4, 0, 0.3],
-      [0.9, 0, -0.75],
+      [0.9, 0, -0.85],
     ],
-    seat: { position: [0.9, 0, -0.75], yaw: Math.PI + 0.25 },
-    focus: [0.9, 1.6, -3.0],
-    camera: { position: [-1.3, 1.65, 1.6], look: [0.3, 1.15, -1.4] },
-    arrival: { position: [-1.4, 1.8, 8.4], look: [0, 1.1, DEV_FACE_Z] },
+    seat: { position: [0.9, 0, -0.85], yaw: Math.PI + 0.25 },
+    focus: [0.9, 1.3, -1.4],
+    camera: { position: [-1.3, 1.65, 1.7], look: [0.3, 1.15, -1.4] },
+    arrival: { position: [-1.4, 1.8, 8.6], look: [0, 1.1, DEV_FACE_Z] },
     Scene: DevScene,
   },
 ];

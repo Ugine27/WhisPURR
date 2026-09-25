@@ -99,7 +99,7 @@ function Code({ text }: { text: string }) {
   );
 }
 
-export default function HubPanel({ persona }: { persona: string }) {
+export default function HubPanel({ persona, origin }: { persona: string; origin?: { x: number; y: number } }) {
   const content = HUB_CONTENT[persona];
   const [apps, setApps] = useState(() => loadApps(persona));
   const [rules, setRules] = useState(() => loadRules(persona));
@@ -166,14 +166,18 @@ export default function HubPanel({ persona }: { persona: string }) {
   };
 
   const spare = KNOWN_APPS.filter((a) => !apps.includes(a));
+  // Grow out of Kivi's device: the panel sits at left 20px / top 64px.
+  const ox = (origin?.x ?? 120) - 20;
+  const oy = (origin?.y ?? 200) - 64;
 
   return (
     <motion.div
       key={persona}
-      initial={{ opacity: 0, x: -24 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -24 }}
-      transition={{ type: 'spring', stiffness: 200, damping: 26 }}
+      initial={{ opacity: 0, scale: 0.35, clipPath: `circle(0px at ${ox}px ${oy}px)` }}
+      animate={{ opacity: 1, scale: 1, clipPath: `circle(160% at ${ox}px ${oy}px)` }}
+      exit={{ opacity: 0, scale: 0.6, clipPath: `circle(0px at ${ox}px ${oy}px)` }}
+      transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
+      style={{ transformOrigin: `${ox}px ${oy}px` }}
       className="absolute left-5 top-16 bottom-24 w-[min(440px,48%)] flex flex-col gap-3 pointer-events-auto text-[#26302a]"
       onClick={(e) => e.stopPropagation()}
     >

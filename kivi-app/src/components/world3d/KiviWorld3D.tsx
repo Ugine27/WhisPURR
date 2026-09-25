@@ -1,15 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Environment, Html, Lightformer, Sparkles } from '@react-three/drei';
-import { Bloom, DepthOfField, EffectComposer, N8AO, ToneMapping, Vignette } from '@react-three/postprocessing';
+import { Environment, Html, Sparkles, useProgress } from '@react-three/drei';
+import { Bloom, DepthOfField, EffectComposer, GodRays, N8AO, ToneMapping, Vignette } from '@react-three/postprocessing';
 import { ToneMappingMode, type DepthOfFieldEffect } from 'postprocessing';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ArrowLeft, Briefcase, Code2, Coffee } from 'lucide-react';
 import * as THREE from 'three';
 import Kiwi3D, { Activity, Outfit, Pose } from './Kiwi3D';
-import Forest, { BRANCH_PERCH, FLIGHT, STONE, STONE_TOP, roomToWorld } from './forest';
+import Forest, { BRANCH_PERCH, FLIGHT, groundHeight, HUB_PATHS, roomToWorld, STONE, STONE_TOP, Sun } from './forest';
 import { ROOMS } from './hubs';
 import HubPanel from './HubPanel';
+import { HDRI, preloadWorld } from './assets';
+import { WindClock } from './nature';
 import { dampAngle, ease } from './util';
 import { AdaptToggle, useTypewriter } from '../styles/KiviWorld';
 
@@ -23,6 +25,8 @@ import { AdaptToggle, useTypewriter } from '../styles/KiviWorld';
 type Stage = 'intro' | 'fly' | 'world' | 'enter' | 'room';
 type Phase = 'transform' | 'toSeat' | 'seated';
 
+preloadWorld();
+
 const INTRO_LINE = 'Come, let us build our world together.';
 const KIWI_SCALE = 0.62;
 const ICONS = { office: Briefcase, cafe: Coffee, dev: Code2 };
@@ -34,21 +38,11 @@ interface KiviWorld3DProps {
   onToggleAdaptive?: () => void;
 }
 
-// A winding walk from the stone to each hub's door, and the hub's key points.
 const PLACES = ROOMS.map((room, i) => {
-  const doorstep = roomToWorld(room, room.doorstep);
-  const from = STONE.clone().setY(0);
-  const side = new THREE.Vector3(-(doorstep.z - from.z), 0, doorstep.x - from.x).normalize();
-  const bend = [0.9, -0.8, 0.7][i] ?? 0.6;
-  const path = new THREE.CatmullRomCurve3([
-    from,
-    from.clone().lerp(doorstep, 0.25).addScaledVector(side, -bend * 0.5),
-    from.clone().lerp(doorstep, 0.5).addScaledVector(side, bend),
-    doorstep,
-  ]);
+  const path = HUB_PATHS[i];
   return {
     room,
-    doorstep,
+    doorstep: roomToWorld(room, room.doorstep),
     walk: path.getSpacedPoints(14).slice(1),
     guide: path.getPointAt(0.35),
     entry: roomToWorld(room, room.entry),
@@ -69,14 +63,21 @@ type Place = (typeof PLACES)[number];
 
 const FLIGHT_POINTS = FLIGHT.getSpacedPoints(80).slice(1);
 
+// Where Kivi's feet rest: hub floors, the stone, or the uneven ground.
+function floorAt(x: number, z: number) {
+  for (const r of ROOMS) if (Math.hypot(x - r.position[0], z - r.position[2]) < r.footprint - 0.9) return 0.03;
+  if (Math.hypot(x - STONE.x, z - STONE.z) < 1.05) return groundHeight(STONE.x, STONE.z) + STONE_TOP;
+  return groundHeight(x, z);
+}
+
 function Bubble({ text }: { text: string }) {
   return (
-    <Html position={[0, 2.35, 0.2]} center zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
+    <Html position={[0, 2.5, 0.2]} center zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
       <motion.div
         initial={{ opacity: 0, y: 10, scale: 0.85 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ type: 'spring', stiffness: 320, damping: 22 }}
-        className="relative w-[15rem] text-center rounded-[28px] bg-[#f3f1e4]/95 text-[#2c3a24] border border-[#dfe4cf] shadow-[0_12px_40px_rgba(20,30,15,0.25)] px-6 py-4 text-2xl leading-tight italic"
+        className="relative w-[15rem] text-center rounded-[28px] bg-[#f3f1e4]/90 backdrop-blur-md text-[#2c3a24] border border-[#dfe4cf] shadow-[0_12px_40px_rgba(20,30,15,0.3)] px-6 py-4 text-2xl leading-tight italic"
       >
         {text}
         <span className="absolute -bottom-2 left-8 w-4 h-4 bg-[#f3f1e4] border-r border-b border-[#dfe4cf] rotate-45 rounded-sm" />
@@ -90,7 +91,7 @@ interface ActorProps {
   route: { points: THREE.Vector3[]; key: number; fly?: boolean };
   speed: number;
   face: number;
-  free: boolean; // follow posRef's height exactly (perched or flying)
+  free: boolean;
   seatY: number | null;
   outfit: Outfit;
   pose: Pose;
@@ -119,7 +120,6 @@ function KiwiActor({ posRef, route, speed, face, free, seatY, outfit, pose, acti
   useFrame(({ clock }, dt) => {
     const g = group.current;
     if (!g) return;
-    // Entrance: Kivi springs into view when the page opens.
     born.current ??= clock.elapsedTime;
     const e = Math.min((clock.elapsedTime - born.current) / 0.9, 1);
     const pop = e >= 1 ? 1 : 1 - Math.cos(e * Math.PI * 2.2) * Math.exp(-e * 5.5);
@@ -133,7 +133,7 @@ function KiwiActor({ posRef, route, speed, face, free, seatY, outfit, pose, acti
       if (!flying.current) d.setY(0);
       const dist = d.length();
       // Cap the step so a slow frame never makes Kivi skip ahead.
-      const step = speed * Math.min(dt, 1 / 30);
+      const step = speed * Math.min(dt, 0.1);
       if (Math.hypot(d.x, d.z) > 0.001) yaw = Math.atan2(d.x, d.z);
       if (dist <= step) {
         p.copy(target);
@@ -148,10 +148,7 @@ function KiwiActor({ posRef, route, speed, face, free, seatY, outfit, pose, acti
         p.addScaledVector(d.normalize(), step);
       }
     }
-    // On the ground Kivi steps up onto the stone and into seats smoothly.
-    const onStone = Math.hypot(p.x - STONE.x, p.z - STONE.z) < 1.05;
-    const groundY = seatY ?? (onStone ? STONE_TOP : 0);
-    const y = free || flying.current ? p.y : THREE.MathUtils.damp(g.position.y, groundY, 9, dt);
+    const y = free || flying.current ? p.y : THREE.MathUtils.damp(g.position.y, seatY ?? floorAt(p.x, p.z), 9, dt);
     g.position.set(p.x, y, p.z);
     g.rotation.y = dampAngle(g.rotation.y, yaw, target ? 10 : 5, dt);
   });
@@ -192,7 +189,6 @@ function Hub({
   useFrame((_, dt) => {
     lit.current = THREE.MathUtils.damp(lit.current, highlighted ? 1 : 0, 4, dt);
     open.current = THREE.MathUtils.damp(open.current, inside ? 1 : 0, 2.2, dt);
-    // The door opens for Kivi whenever it comes near.
     const near = kiwiPos.current.distanceTo(place.door) < 1.9;
     door.current = THREE.MathUtils.damp(door.current, near ? 1 : 0, 3.5, dt);
   });
@@ -223,7 +219,7 @@ function Hub({
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
-            className="flex items-center gap-1.5 whitespace-nowrap px-3 py-1 rounded-full bg-[#f3f1e4]/85 backdrop-blur text-[#2c3a24] text-[11px] font-semibold tracking-[0.18em] shadow-[0_6px_20px_rgba(20,30,15,0.2)]"
+            className="flex items-center gap-1.5 whitespace-nowrap px-3 py-1 rounded-full bg-[#f3f1e4]/80 backdrop-blur-md text-[#2c3a24] text-[11px] font-semibold tracking-[0.18em] shadow-[0_6px_20px_rgba(20,30,15,0.25)]"
           >
             {active && <span className="w-1.5 h-1.5 rounded-full bg-[#62823a]" />}
             {room.label.toUpperCase()}
@@ -234,8 +230,7 @@ function Hub({
   );
 }
 
-// Prepares every material in the background during the intro, so the world
-// doesn't stutter the first time it comes into view.
+// Prepares every material in the background so nothing stutters later.
 function Precompile() {
   const { gl, scene, camera } = useThree();
   useEffect(() => {
@@ -247,7 +242,14 @@ function Precompile() {
   return null;
 }
 
-// Moves the camera, depth of field and fog, and tracks where the viewer is.
+const easeInOutCubic = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+/*
+ * The camera director. While Kivi is perched or flying the camera follows it
+ * closely. Every other move is a cinematic shot: a cubic Bezier that lifts
+ * gently between the two framings, eased in and out, with the look target
+ * travelling on the same curve of time.
+ */
 function Director({
   stage,
   place,
@@ -255,6 +257,7 @@ function Director({
   camPos,
   mouseLook,
   dof,
+  deviceOnScreen,
 }: {
   stage: Stage;
   place: Place | null;
@@ -262,78 +265,99 @@ function Director({
   camPos: THREE.Vector3;
   mouseLook: THREE.Vector3;
   dof: React.RefObject<DepthOfFieldEffect>;
+  deviceOnScreen: React.MutableRefObject<{ x: number; y: number }>;
 }) {
+  const { size } = useThree();
   const look = useRef(BRANCH_PERCH.clone().add(new THREE.Vector3(0, 0.8, 0)));
-  const pos = useMemo(() => new THREE.Vector3(), []);
-  const tgt = useMemo(() => new THREE.Vector3(), []);
+  const shotPos = useMemo(() => new THREE.Vector3(), []);
+  const shotLook = useMemo(() => new THREE.Vector3(), []);
   const focus = useMemo(() => new THREE.Vector3(), []);
+  const move = useRef<{ curve: THREE.CubicBezierCurve3; lookFrom: THREE.Vector3; lookTo: THREE.Vector3; t: number; dur: number; to: THREE.Vector3 } | null>(null);
+  const hold = useMemo(() => new THREE.Vector3(), []);
   const blur = useRef(5);
   const range = useRef(1.2);
+  const tmp = useMemo(() => new THREE.Vector3(), []);
+  const started = useRef(false);
 
   useFrame(({ camera, pointer, scene }, dt) => {
     const k = kiwiPos.current;
-    let speed = 1.6;
     let bokeh = 3;
     let focusRange = 2.4;
     let fov = 40;
-    let fogNear = 22;
-    let fogFar = 80;
-    if (stage === 'intro') {
-      pos.set(k.x + 0.85 + pointer.x * 0.1, k.y + 0.9 + pointer.y * 0.05, k.z + 2.5);
-      tgt.set(k.x - 0.1, k.y + 0.78, k.z);
+    let fogDensity = 0.016;
+    const cam = camera as THREE.PerspectiveCamera;
+
+    if (stage === 'intro' || stage === 'fly') {
+      // Follow Kivi closely: in front of it on the branch, behind it in flight.
+      const pos = stage === 'intro' ? new THREE.Vector3(k.x + 0.85 + pointer.x * 0.1, k.y + 1.0 + pointer.y * 0.05, k.z + 2.6) : new THREE.Vector3(k.x + 0.35, k.y + 1.0, k.z + 3.0);
+      const tgt = stage === 'intro' ? new THREE.Vector3(k.x - 0.1, k.y + 0.8, k.z) : new THREE.Vector3(k.x, k.y + 0.1, k.z - 3);
+      const speed = stage === 'intro' ? 1.6 : 3.2;
+      camera.position.lerp(pos, ease(speed, dt));
+      look.current.lerp(tgt, ease(speed + 0.8, dt));
       focus.set(k.x, k.y + 0.8, k.z);
-      bokeh = 5.5;
-      focusRange = 1.2;
-    } else if (stage === 'fly') {
-      // Chase Kivi down through the canopy.
-      pos.set(k.x + 0.35, k.y + 0.95, k.z + 3.0);
-      tgt.set(k.x, k.y + 0.1, k.z - 3);
-      focus.set(k.x, k.y + 0.6, k.z);
-      speed = 3.2;
-      bokeh = 3;
-      focusRange = 2;
-    } else if (stage === 'world') {
-      pos.set(pointer.x * 1.2, 12.5 + pointer.y * 0.4, 11.5);
-      tgt.set(0, 0.3, -2.8);
-      focus.set(0, 1, -1.5);
-      speed = 1.1;
-      bokeh = 1.4;
-      focusRange = 14;
-      fov = 55;
-      fogNear = 28;
-      fogFar = 95;
-    } else if (place && stage === 'enter') {
-      pos.copy(place.arrivalCam).addScaledVector(place.side, pointer.x * 0.25);
-      tgt.copy(place.arrivalLook);
-      focus.set(k.x, 0.8, k.z);
-      speed = 1.2;
-      bokeh = 2.4;
-      focusRange = 3;
-    } else if (place) {
-      pos.copy(place.cam).addScaledVector(place.side, pointer.x * 0.12);
-      pos.y += pointer.y * 0.05;
-      tgt.copy(place.look);
-      focus.set(k.x, 0.9, k.z);
-      speed = 1.3;
-      bokeh = 3;
-      focusRange = 2.4;
+      bokeh = stage === 'intro' ? 5.5 : 3;
+      focusRange = stage === 'intro' ? 1.2 : 2;
+      fogDensity = 0.022;
+      move.current = null;
+    } else {
+      if (stage === 'world') {
+        shotPos.set(0, 12.5, 11.5);
+        shotLook.set(0, 0.3, -2.8);
+        focus.set(0, 1, -1.5);
+        bokeh = 1.4;
+        focusRange = 14;
+        fov = 55;
+      } else if (place && stage === 'enter') {
+        shotPos.copy(place.arrivalCam);
+        shotLook.copy(place.arrivalLook);
+        focus.set(k.x, k.y + 0.8, k.z);
+        bokeh = 2.4;
+        focusRange = 3;
+      } else if (place) {
+        shotPos.copy(place.cam);
+        shotLook.copy(place.look);
+        focus.set(k.x, k.y + 0.9, k.z);
+        bokeh = 3;
+        focusRange = 2.4;
+      }
+      // A new framing: plan a curved move from wherever the camera is now.
+      // (Starting straight in the world, e.g. with reduced motion, cuts to it.)
+      const first = !started.current;
+      if (!move.current || move.current.to.distanceTo(shotPos) > 0.05) {
+        const from = camera.position.clone();
+        const dist = from.distanceTo(shotPos);
+        const lift = new THREE.Vector3(0, Math.min(3, dist * 0.22), 0);
+        const c1 = from.clone().lerp(shotPos, 0.3).add(lift);
+        const c2 = shotPos.clone().lerp(from, 0.3).add(lift.clone().multiplyScalar(0.6));
+        move.current = { curve: new THREE.CubicBezierCurve3(from, c1, c2, shotPos.clone()), lookFrom: first ? shotLook.clone() : look.current.clone(), lookTo: shotLook.clone(), t: first ? 1 : 0, dur: THREE.MathUtils.clamp(0.9 + dist / 6, 1.2, 3.4), to: shotPos.clone() };
+        if (first) camera.position.copy(shotPos);
+      }
+      const m = move.current;
+      m.t = Math.min(1, m.t + Math.min(dt, 0.1) / m.dur);
+      const e = easeInOutCubic(m.t);
+      m.curve.getPoint(e, hold);
+      // Once framed, the shot breathes with the pointer.
+      const drift = m.t >= 1 ? 1 : 0;
+      tmp.set(pointer.x * 0.3, pointer.y * 0.12, 0).applyQuaternion(camera.quaternion).multiplyScalar(drift);
+      camera.position.lerp(hold.add(tmp), m.t >= 1 ? ease(3, dt) : 1);
+      look.current.lerpVectors(m.lookFrom, m.lookTo, e);
     }
-    camera.position.lerp(pos, ease(speed, dt));
-    look.current.lerp(tgt, ease(speed + 0.8, dt));
     camera.lookAt(look.current);
     camPos.copy(camera.position);
-    const cam = camera as THREE.PerspectiveCamera;
+    started.current = true;
     if (Math.abs(cam.fov - fov) > 0.01) {
       cam.fov = THREE.MathUtils.damp(cam.fov, fov, 1.5, dt);
       cam.updateProjectionMatrix();
     }
-    if (scene.fog instanceof THREE.Fog) {
-      scene.fog.near = THREE.MathUtils.damp(scene.fog.near, fogNear, 1.5, dt);
-      scene.fog.far = THREE.MathUtils.damp(scene.fog.far, fogFar, 1.5, dt);
-    }
+    if (scene.fog instanceof THREE.FogExp2) scene.fog.density = THREE.MathUtils.damp(scene.fog.density, fogDensity, 1.5, dt);
 
-    // Gaze target in front of Kivi that follows the cursor during the intro.
     mouseLook.set(k.x + pointer.x * 2.2, k.y + 0.9 + pointer.y * 1.2, k.z + 2.5);
+
+    // Where Kivi's device is on screen; the hub panel grows from there.
+    if (place) {
+      tmp.copy(place.focus).project(camera);
+      deviceOnScreen.current = { x: (tmp.x * 0.5 + 0.5) * size.width, y: (-tmp.y * 0.5 + 0.5) * size.height };
+    }
 
     blur.current = THREE.MathUtils.damp(blur.current, bokeh, 2, dt);
     range.current = THREE.MathUtils.damp(range.current, focusRange, 2, dt);
@@ -347,7 +371,6 @@ function Director({
   return null;
 }
 
-// Brightens the stone's marks when Kivi lands, then lets them settle.
 function StoneDriver({ glow, landedAt }: { glow: React.MutableRefObject<number>; landedAt: number | null }) {
   useFrame(({ clock }, dt) => {
     const since = landedAt === null ? Infinity : clock.elapsedTime - landedAt;
@@ -356,7 +379,40 @@ function StoneDriver({ glow, landedAt }: { glow: React.MutableRefObject<number>;
   return null;
 }
 
-// People who ask for reduced motion start in the world, skipping the intro.
+function ClockTap({ clockRef }: { clockRef: React.MutableRefObject<number> }) {
+  useFrame(({ clock }) => {
+    clockRef.current = clock.elapsedTime;
+  });
+  return null;
+}
+
+// Shown while the forest's scanned assets stream in.
+function Loader() {
+  const { active, progress } = useProgress();
+  return (
+    <AnimatePresence>
+      {active && (
+        <motion.div
+          initial={{ opacity: 1 }}
+          exit={{ opacity: 0, transition: { duration: 0.8 } }}
+          className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-5 bg-[radial-gradient(ellipse_at_center,#3d5a2c_0%,#1a2614_75%)]"
+        >
+          <motion.svg viewBox="0 0 120 90" className="w-28" animate={{ y: [0, -4, 0] }} transition={{ duration: 2.2, repeat: Infinity }} aria-hidden="true">
+            <ellipse cx="52" cy="52" rx="34" ry="28" fill="#6f944a" />
+            <circle cx="82" cy="36" r="15" fill="#6f944a" />
+            <path d="M94 38 Q110 50 114 72" stroke="#d8c3a2" strokeWidth="4" strokeLinecap="round" fill="none" />
+            <circle cx="87" cy="32" r="2.6" fill="#1a1208" />
+            <path d="M44 78 v8 M60 78 v8" stroke="#c7b595" strokeWidth="4" strokeLinecap="round" />
+          </motion.svg>
+          <div className="w-44 h-1 rounded-full bg-[#f3f1e4]/20 overflow-hidden" role="progressbar" aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100} aria-label="Loading Kivi's world">
+            <motion.div className="h-full bg-[#cfe3a6]" animate={{ width: `${progress}%` }} transition={{ ease: 'easeOut' }} />
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 const prefersReducedMotion = (() => {
   try {
     return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -374,9 +430,12 @@ export default function KiviWorld3D({ activeStyleName, onSelectActiveStyle, isAd
   const [hopKey, setHopKey] = useState(0);
   const [landedAt, setLandedAt] = useState<number | null>(null);
   const [route, setRoute] = useState<{ points: THREE.Vector3[]; key: number; fly?: boolean }>({ points: [], key: 0 });
+  const [sun, setSun] = useState<THREE.Mesh | null>(null);
+  const { active: loading } = useProgress();
   const kiwiPos = useRef(prefersReducedMotion ? STONE.clone() : BRANCH_PERCH.clone());
   const camPos = useMemo(() => new THREE.Vector3(), []);
   const mouseLook = useMemo(() => new THREE.Vector3(), []);
+  const deviceOnScreen = useRef({ x: 0, y: 0 });
   const stoneGlow = useRef(0);
   const clockRef = useRef(0);
   const dof = useRef<DepthOfFieldEffect>(null);
@@ -387,11 +446,13 @@ export default function KiviWorld3D({ activeStyleName, onSelectActiveStyle, isAd
     timers.current = [];
   };
 
+  // Kivi starts speaking a moment after the forest has loaded.
   const [introReady, setIntroReady] = useState(false);
   useEffect(() => {
-    const t = setTimeout(() => setIntroReady(true), 1100);
+    if (loading) return;
+    const t = setTimeout(() => setIntroReady(true), 1300);
     return () => clearTimeout(t);
-  }, []);
+  }, [loading]);
   const introText = useTypewriter(INTRO_LINE, stage === 'intro' && introReady, 45);
   const introDone = introText.length === INTRO_LINE.length;
 
@@ -411,7 +472,6 @@ export default function KiviWorld3D({ activeStyleName, onSelectActiveStyle, isAd
     walk(FLIGHT_POINTS, true);
   };
 
-  // Once Kivi has spoken, it takes flight.
   useEffect(() => {
     if (stage !== 'intro' || !introDone) return;
     const t = setTimeout(takeOff, 1900);
@@ -423,7 +483,6 @@ export default function KiviWorld3D({ activeStyleName, onSelectActiveStyle, isAd
     setHovered(id);
     if (!id || stage !== 'world') return;
     setHopKey((k) => k + 1);
-    // Kivi walks a little way along the path, then turns back to invite you.
     if (guide?.id !== id) {
       const p = PLACES.find((pl) => pl.room.id === id)!;
       setGuide({ id, arrived: false });
@@ -459,13 +518,13 @@ export default function KiviWorld3D({ activeStyleName, onSelectActiveStyle, isAd
     if (stage === 'fly') {
       setStage('world');
       setLandedAt(clockRef.current);
-      setHopKey((k) => k + 1);
     } else if (stage === 'world' && guide && !guide.arrived) {
       setGuide({ ...guide, arrived: true });
     } else if (stage === 'enter' && place) {
       beginRoom(place);
     } else if (stage === 'room' && phase === 'toSeat') {
       setPhase('seated');
+      if (place?.room.pose === 'sit') setHopKey((k) => k + 1);
     }
   };
 
@@ -509,68 +568,69 @@ export default function KiviWorld3D({ activeStyleName, onSelectActiveStyle, isAd
   const speed = stage === 'fly' ? 6.5 : stage === 'room' ? 2.2 : 3;
 
   return (
-    <div className="relative w-full h-full rounded-3xl overflow-hidden select-none bg-[#1d2418]" onClick={() => stage === 'intro' && introDone && takeOff()}>
-      <Canvas shadows="soft" dpr={[1, 2]} gl={{ antialias: false }} camera={{ fov: 40, position: [BRANCH_PERCH.x + 1.2, BRANCH_PERCH.y + 1.2, BRANCH_PERCH.z + 5], near: 0.05, far: 600 }}>
-        <color attach="background" args={['#dfe6d4']} />
-        <fog attach="fog" args={['#dfe6d2', 22, 80]} />
-        <Environment resolution={256} frames={1}>
-          <Lightformer form="rect" intensity={2} color="#fff6e2" position={[-6, 10, 6]} scale={[14, 6, 1]} />
-          <Lightformer form="rect" intensity={1.1} color="#dfeccf" position={[-10, 4, 0]} rotation-y={Math.PI / 2} scale={[10, 4, 1]} />
-          <Lightformer form="rect" intensity={0.8} color="#d8e6d4" position={[10, 3, -4]} rotation-y={-Math.PI / 2} scale={[10, 4, 1]} />
-          <Lightformer form="ring" intensity={1.4} color="#fffbe8" position={[0, 12, 0]} rotation-x={Math.PI / 2} scale={6} />
-        </Environment>
-        <hemisphereLight args={['#f6f7e8', '#7d9658', 1.1]} />
-        <ambientLight intensity={0.25} color="#fff8e8" />
-        <directionalLight
-          position={[-10, 18, 8]}
-          intensity={3}
-          color="#fff1d6"
-          castShadow
-          shadow-mapSize={[2048, 2048]}
-          shadow-camera-left={-22}
-          shadow-camera-right={22}
-          shadow-camera-top={30}
-          shadow-camera-bottom={-18}
-          shadow-bias={-0.0004}
-          shadow-normalBias={0.02}
-        />
-        <Forest showBranch={stage === 'intro' || stage === 'fly'} stoneGlow={stoneGlow} />
-        <StoneDriver glow={stoneGlow} landedAt={landedAt} />
-        <ClockTap clockRef={clockRef} />
-        <Sparkles count={90} scale={[36, 10, 36]} position={[0, 4, 4]} size={3} speed={0.2} opacity={0.6} color="#f6f2d0" />
-        {PLACES.map((p) => (
-          <Hub
-            key={p.room.id}
-            place={p}
-            interactive={stage === 'world'}
-            highlighted={hovered === p.room.id || (inRoom && place?.room.id === p.room.id)}
-            inside={inRoom && place?.room.id === p.room.id}
-            active={activeStyleName === p.room.persona}
-            showLabel={stage === 'world' && (hovered === p.room.id || guidePlace?.room.id === p.room.id)}
-            kiwiPos={kiwiPos}
-            onHover={hover}
-            onPick={pick}
+    <div className="relative w-full h-full rounded-3xl overflow-hidden select-none bg-[#1a2614]" onClick={() => stage === 'intro' && introDone && takeOff()}>
+      <Canvas shadows="soft" dpr={[1, 1.5]} gl={{ antialias: false }} camera={{ fov: 40, position: [BRANCH_PERCH.x + 1.2, BRANCH_PERCH.y + 1.2, BRANCH_PERCH.z + 5], near: 0.05, far: 600 }}>
+        <fogExp2 attach="fog" args={['#b8c6ab', 0.022]} />
+        <WindClock />
+        <Suspense fallback={null}>
+          <Environment files={HDRI} background backgroundBlurriness={0.04} backgroundIntensity={0.85} environmentIntensity={0.9} />
+          <hemisphereLight args={['#eef3e0', '#55703c', 0.35]} />
+          {/* Low sun behind the canopy: warm rim light and long shadows. */}
+          <directionalLight
+            position={[-14, 20, -28]}
+            intensity={3.2}
+            color="#ffe9c4"
+            castShadow
+            shadow-mapSize={[2048, 2048]}
+            shadow-camera-left={-24}
+            shadow-camera-right={24}
+            shadow-camera-top={30}
+            shadow-camera-bottom={-24}
+            shadow-camera-far={120}
+            shadow-bias={-0.0004}
+            shadow-normalBias={0.03}
           />
-        ))}
-        <KiwiActor
-          posRef={kiwiPos}
-          route={route}
-          speed={speed}
-          face={face}
-          free={stage === 'intro'}
-          seatY={seatY}
-          outfit={outfit}
-          pose={pose}
-          activity={activity}
-          lookAt={lookAt}
-          hopKey={hopKey}
-          bubble={stage === 'intro' ? introText || null : null}
-          onArrive={arrived}
-        />
-        <Precompile />
-        <Director stage={stage} place={place} kiwiPos={kiwiPos} camPos={camPos} mouseLook={mouseLook} dof={dof} />
+          <directionalLight position={[10, 12, 18]} intensity={0.6} color="#dfe8ff" />
+          <Sun ref={setSun} />
+          <Forest showBranch={stage === 'intro' || stage === 'fly'} stoneGlow={stoneGlow} />
+          <StoneDriver glow={stoneGlow} landedAt={landedAt} />
+          <ClockTap clockRef={clockRef} />
+          <Sparkles count={120} scale={[36, 10, 36]} position={[0, 4, 4]} size={2.5} speed={0.15} opacity={0.5} color="#f6f2d0" />
+          {PLACES.map((p) => (
+            <Hub
+              key={p.room.id}
+              place={p}
+              interactive={stage === 'world'}
+              highlighted={hovered === p.room.id || (inRoom && place?.room.id === p.room.id)}
+              inside={inRoom && place?.room.id === p.room.id}
+              active={activeStyleName === p.room.persona}
+              showLabel={stage === 'world' && (hovered === p.room.id || guidePlace?.room.id === p.room.id)}
+              kiwiPos={kiwiPos}
+              onHover={hover}
+              onPick={pick}
+            />
+          ))}
+          <KiwiActor
+            posRef={kiwiPos}
+            route={route}
+            speed={speed}
+            face={face}
+            free={stage === 'intro'}
+            seatY={seatY}
+            outfit={outfit}
+            pose={pose}
+            activity={activity}
+            lookAt={lookAt}
+            hopKey={hopKey}
+            bubble={stage === 'intro' && !loading ? introText || null : null}
+            onArrive={arrived}
+          />
+          <Precompile />
+        </Suspense>
+        <Director stage={stage} place={place} kiwiPos={kiwiPos} camPos={camPos} mouseLook={mouseLook} dof={dof} deviceOnScreen={deviceOnScreen} />
         <EffectComposer multisampling={4}>
           <N8AO aoRadius={0.8} intensity={2.2} distanceFalloff={0.6} halfRes />
+          {sun ? <GodRays sun={sun} samples={40} density={0.95} decay={0.94} weight={0.35} exposure={0.45} clampMax={1} blur /> : <></>}
           <DepthOfField ref={dof} target={[BRANCH_PERCH.x, BRANCH_PERCH.y + 0.8, BRANCH_PERCH.z]} focalLength={0.02} bokehScale={5} />
           <Bloom luminanceThreshold={0.85} luminanceSmoothing={0.2} intensity={0.5} mipmapBlur />
           <Vignette offset={0.28} darkness={0.45} />
@@ -578,7 +638,25 @@ export default function KiviWorld3D({ activeStyleName, onSelectActiveStyle, isAd
         </EffectComposer>
       </Canvas>
 
-      <AnimatePresence>{seated && place && <HubPanel key={place.room.id} persona={place.room.persona} />}</AnimatePresence>
+      <Loader />
+
+      <AnimatePresence>
+        {seated && place && (
+          <>
+            {/* Frosted glass over the 3D behind the panel. */}
+            <motion.div
+              key={`frost-${place.room.id}`}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.6 }}
+              className="absolute inset-0 pointer-events-none backdrop-blur-[10px]"
+              style={{ maskImage: 'linear-gradient(to right, black 0%, black 40%, transparent 58%)', WebkitMaskImage: 'linear-gradient(to right, black 0%, black 40%, transparent 58%)' }}
+            />
+            <HubPanel key={place.room.id} persona={place.room.persona} origin={deviceOnScreen.current} />
+          </>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {inRoom && place && (
@@ -587,11 +665,11 @@ export default function KiviWorld3D({ activeStyleName, onSelectActiveStyle, isAd
               type="button"
               aria-label="Back to the forest"
               onClick={leave}
-              className="pointer-events-auto absolute top-4 left-4 w-11 h-11 rounded-full bg-[#f3f1e4]/85 backdrop-blur-md text-[#2c3a24] shadow-md flex items-center justify-center hover:scale-105 transition-transform cursor-pointer"
+              className="pointer-events-auto absolute top-4 left-4 z-10 w-11 h-11 rounded-full bg-[#f3f1e4]/85 backdrop-blur-md text-[#2c3a24] shadow-md flex items-center justify-center hover:scale-105 transition-transform cursor-pointer"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
-            <div className="pointer-events-auto absolute bottom-5 left-1/2 -translate-x-1/2 flex gap-1 p-1 rounded-full bg-[#f3f1e4]/80 backdrop-blur-md shadow-[0_8px_30px_rgba(20,30,15,0.2)]">
+            <div className="pointer-events-auto absolute bottom-5 left-1/2 -translate-x-1/2 flex gap-1 p-1 rounded-full bg-[#f3f1e4]/80 backdrop-blur-md shadow-[0_8px_30px_rgba(20,30,15,0.25)]">
               {PLACES.map((p) => {
                 const Icon = ICONS[p.room.icon];
                 const current = p.room.id === place.room.id;
@@ -622,12 +700,4 @@ export default function KiviWorld3D({ activeStyleName, onSelectActiveStyle, isAd
       )}
     </div>
   );
-}
-
-// Exposes the render clock to event handlers (for timing the landing glow).
-function ClockTap({ clockRef }: { clockRef: React.MutableRefObject<number> }) {
-  useFrame(({ clock }) => {
-    clockRef.current = clock.elapsedTime;
-  });
-  return null;
 }
