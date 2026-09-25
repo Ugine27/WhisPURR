@@ -6,7 +6,10 @@ import { Briefcase, Calendar, Code2, Coffee, GitBranch, Instagram, Linkedin, Mai
  */
 
 export const ASSETS = {
-  intro: '/assets/intro-pixel.png',
+  intro: '/assets/pixel-bg.png', // small dithered image, scaled up with crisp pixels
+  // Kivi on the intro screen (waving), a transparent cutout.
+  // `matte` softens a studio backdrop; only needed for images without transparency.
+  kiviDefault: { src: '/assets/kivi-default.webp', matte: false },
   world: '/assets/world-bg.jpg',
   worldAspect: 1024 / 572, // width / height of the world image, for placing hotspots
 };
@@ -98,7 +101,7 @@ export const EASE_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1]; // 
 export const HUB_ZOOM = 2.6; // how far the world zooms into a building
 
 export const preloadAll = () => {
-  [ASSETS.world, ...HUBS.flatMap((h) => [h.kivi.src, h.interior].filter(Boolean) as string[])].forEach((src) => {
+  [ASSETS.world, ASSETS.kiviDefault.src, ...HUBS.flatMap((h) => [h.kivi.src, h.interior].filter(Boolean) as string[])].forEach((src) => {
     const img = new Image();
     img.src = src;
   });
