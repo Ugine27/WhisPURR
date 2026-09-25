@@ -184,6 +184,7 @@ interface WhispurrAppProps {
   setMeetsInvisibleOverlay?: (v: boolean) => void;
   meetsMeetingSummary?: boolean;
   setMeetsMeetingSummary?: (v: boolean) => void;
+  onTabChange?: (tab: string) => void;
 }
 
 export default function WhispurrApp({ 
@@ -194,7 +195,8 @@ export default function WhispurrApp({
   meetsInvisibleOverlay = true,
   setMeetsInvisibleOverlay = () => {},
   meetsMeetingSummary = false,
-  setMeetsMeetingSummary = () => {}
+  setMeetsMeetingSummary = () => {},
+  onTabChange,
 }: WhispurrAppProps) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -205,6 +207,11 @@ export default function WhispurrApp({
       return 'Home';
     }
   });
+  // Let the desktop know which tab is showing (it hides the dock orb on Persona).
+  useEffect(() => {
+    onTabChange?.(activeTab);
+  }, [activeTab, onTabChange]);
+
   const [historyView, setHistoryView] = useState<'days' | 'months'>('days');
   const [homeVideo, setHomeVideo] = useState(() => VIDEOS[Math.floor(Math.random() * VIDEOS.length)]);
   const [videoKey, setVideoKey] = useState(0);

@@ -54,6 +54,9 @@ const MockOS = memo(({
   
   // Floating Strip State
   const [isHovered, setIsHovered] = useState(false);
+  // The Persona page is full-bleed, so the dock orb steps aside while it is open.
+  const [appTab, setAppTab] = useState('Home');
+  const hideOrb = openApp === 'whispurr' && ['Persona', 'Modes', 'Context'].includes(appTab);
 
   // Global Double Tap logic for Quicklaunch
   useEffect(() => {
@@ -674,7 +677,7 @@ const MockOS = memo(({
 
           {/* Central Cat in Dock */}
           <AnimatePresence>
-            {!isHudOpen && (
+            {!isHudOpen && !hideOrb && (
               <motion.div 
                 layoutId="whispurr-morph"
                 transition={{ type: "spring", mass: 0.8, stiffness: 280, damping: 24 }}
@@ -710,7 +713,7 @@ const MockOS = memo(({
           </AnimatePresence>
 
           <AnimatePresence>
-            {isHovered && (
+            {isHovered && !hideOrb && (
                 <>
                   {/* ScratchPad Satellite (Top Left) */}
                   <motion.div 
@@ -1126,6 +1129,7 @@ const MockOS = memo(({
                   setMeetsInvisibleOverlay={setMeetsInvisibleOverlay}
                   meetsMeetingSummary={meetsMeetingSummary}
                   setMeetsMeetingSummary={setMeetsMeetingSummary}
+                  onTabChange={setAppTab}
                 />
               )}
             </div>
