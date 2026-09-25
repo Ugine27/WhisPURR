@@ -1,11 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { seeded, smooth, V3 } from './util';
 
-// Kivi is a round, fluffy chick: a big head resting on a slightly larger body.
-const FUR = '#a87a55';
-const SHEEN = '#f3d2ae';
+// Kivi is a round, green kiwi: a big head resting on a slightly larger body,
+// covered in soft, hair-like feathers.
+const FUR = '#58793f';
+const SHEEN = '#cfe3a6';
+const WING = '#4f6d2e';
 const HEAD = { c: new THREE.Vector3(0, 1.45, 0.08), r: 0.5 };
 const BODY = { c: new THREE.Vector3(0, 0.85, 0), r: 0.62, s: new THREE.Vector3(1, 1.02, 0.95) };
 // The head turns around this point, roughly where a neck would be.
@@ -13,14 +15,7 @@ const NECK = new THREE.Vector3(0, 1.12, 0.02);
 
 export type Outfit = 'none' | 'suit' | 'casual' | 'dev';
 export type Pose = 'stand' | 'sit';
-export type Activity = 'none' | 'type' | 'sip' | 'watch';
-
-const BODY_COLOR: Record<Outfit, string> = {
-  none: FUR,
-  suit: '#2f3b52',
-  casual: '#e7d6bf',
-  dev: '#3a4254',
-};
+export type Activity = 'none' | 'type' | 'sip' | 'watch' | 'beckon';
 
 interface Kiwi3DProps {
   outfit: Outfit;
@@ -35,62 +30,56 @@ function Mat({ color, emissive, intensity = 0, rough = 0.7 }: { color: string; e
   return <meshStandardMaterial color={color} roughness={rough} emissive={emissive ?? '#000000'} emissiveIntensity={intensity} />;
 }
 
-// A few fine wisps standing up on the crown, like a chick's fuzz.
-function CrownFuzz() {
-  const tufts = useMemo(() => {
-    const rand = seeded(11);
-    const out: { pos: THREE.Vector3; normal: THREE.Vector3; len: number }[] = [];
-    const n = 520;
-    for (let i = 0; i < n; i++) {
-      const y = 1 - (i / (n - 1)) * 2;
-      if (y < 0.82) continue;
-      const r = Math.sqrt(1 - y * y);
-      const th = i * 2.399963;
-      const dir = new THREE.Vector3(Math.cos(th) * r, y, Math.sin(th) * r);
-      out.push({ pos: HEAD.c.clone().addScaledVector(dir, HEAD.r), normal: dir, len: 0.045 + rand() * 0.035 });
-    }
-    return out;
-  }, []);
-  const ref = useRef<THREE.InstancedMesh>(null);
-  useLayoutEffect(() => {
-    const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion();
-    const up = new THREE.Vector3(0, 1, 0);
-    tufts.forEach((t, i) => {
-      q.setFromUnitVectors(up, t.normal);
-      m.compose(t.pos.clone().addScaledVector(t.normal, t.len * 0.3), q, new THREE.Vector3(0.35, t.len / 0.05, 0.35));
-      ref.current!.setMatrixAt(i, m);
-    });
-    ref.current!.instanceMatrix.needsUpdate = true;
-  }, [tufts]);
-  return (
-    <instancedMesh ref={ref} args={[undefined, undefined, tufts.length]}>
-      <sphereGeometry args={[0.05, 8, 6]} />
-      <meshPhysicalMaterial color="#c49a70" roughness={1} sheen={1} sheenColor={SHEEN} sheenRoughness={0.6} />
-    </instancedMesh>
-  );
-}
-
-// Shell fur: stacked, slightly larger copies of a shape. Each layer keeps only
-// the strands tall enough to reach it, so the surface reads as soft fuzz.
-const FUR_LAYERS = 14;
-let strandTexture: THREE.DataTexture | null = null;
-function getStrandTexture() {
-  if (strandTexture) return strandTexture;
-  const w = 256;
-  const h = 128;
-  const data = new Uint8Array(w * h * 4);
+// Feathers are drawn as shells: stacked, slightly larger copies of a shape.
+// Each layer keeps only the parts of a feather long enough to reach it, and
+// layers sag a little, so the plumage reads as soft kiwi feathers combed down.
+const FUR_LAYERS = 16;
+let featherTextures: { alpha: THREE.DataTexture; tint: THREE.DataTexture } | null = null;
+function getFeatherTextures() {
+  if (featherTextures) return featherTextures;
+  const w = 512;
+  const h = 256;
+  const alpha = new Uint8Array(w * h * 4);
+  const tint = new Uint8Array(w * h * 4);
+  for (let i = 0; i < w * h; i++) tint.set([235, 240, 225, 255], i * 4);
   const rand = seeded(99);
-  for (let i = 0; i < w * h; i++) {
-    const v = Math.floor(Math.pow(rand(), 0.7) * 255);
-    data.set([v, v, v, 255], i * 4);
+  for (let f = 0; f < 5200; f++) {
+    const x0 = Math.floor(rand() * w);
+    const y0 = Math.floor(rand() * h);
+    const len = 10 + rand() * 26;
+    const width = 2 + rand() * 3;
+    const strength = 0.35 + rand() * 0.65;
+    // Each feather gets its own tint: some lighter and warmer, some deeper.
+    const lum = 0.82 + rand() * 0.3;
+    const warm = (rand() - 0.5) * 0.14;
+    for (let dy = 0; dy < len; dy++) {
+      const t = dy / len;
+      const hw = width * Math.sin(Math.PI * Math.min(1, 0.15 + t)) * (1 - t * 0.6);
+      const y = (y0 + dy) % h;
+      for (let dx = -Math.ceil(hw); dx <= Math.ceil(hw); dx++) {
+        const edge = 1 - Math.abs(dx) / (hw + 0.5);
+        if (edge <= 0) continue;
+        const x = (x0 + dx + w) % w;
+        const v = Math.floor(255 * strength * (1 - t * 0.55) * Math.sqrt(edge));
+        const k = (y * w + x) * 4;
+        if (v > alpha[k]) {
+          alpha.set([v, v, v, 255], k);
+          tint.set([Math.min(255, 255 * lum * (1 + warm)), Math.min(255, 255 * lum), Math.min(255, 255 * lum * (1 - warm)), 255], k);
+        }
+      }
+    }
   }
-  strandTexture = new THREE.DataTexture(data, w, h);
-  strandTexture.wrapS = strandTexture.wrapT = THREE.RepeatWrapping;
-  strandTexture.repeat.set(3, 3);
-  strandTexture.magFilter = THREE.NearestFilter;
-  strandTexture.needsUpdate = true;
-  return strandTexture;
+  const make = (data: Uint8Array<ArrayBuffer>, srgb: boolean) => {
+    const tex = new THREE.DataTexture(data, w, h);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(3, 2);
+    tex.magFilter = THREE.LinearFilter;
+    if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    return tex;
+  };
+  featherTextures = { alpha: make(alpha, false), tint: make(tint, true) };
+  return featherTextures;
 }
 
 function FurShells({
@@ -100,6 +89,8 @@ function FurShells({
   color,
   length = 0.07,
   ease = 10,
+  droop = 0.45,
+  countershade = false,
 }: {
   radius: number;
   position: THREE.Vector3 | V3;
@@ -107,19 +98,24 @@ function FurShells({
   color: string;
   length?: number;
   ease?: number;
+  droop?: number;
+  countershade?: boolean;
 }) {
   const mats = useMemo(
     () =>
       Array.from({ length: FUR_LAYERS }, (_, i) => {
         const h = (i + 1) / FUR_LAYERS;
+        const { alpha, tint } = getFeatherTextures();
         return new THREE.MeshPhysicalMaterial({
           color,
-          alphaMap: getStrandTexture(),
-          alphaTest: 0.08 + h * 0.85,
+          map: tint,
+          alphaMap: alpha,
+          alphaTest: 0.06 + h * 0.8,
           roughness: 1,
           sheen: 1,
           sheenColor: new THREE.Color(SHEEN),
           sheenRoughness: 0.5,
+          vertexColors: countershade,
         });
       }),
     // Colour changes are eased in useFrame; the materials are built once.
@@ -130,18 +126,43 @@ function FurShells({
     const k = 1 - Math.exp(-ease * dt);
     mats.forEach((m, i) => {
       // Roots sit in shadow, tips catch the light.
-      const shade = 0.72 + ((i + 1) / FUR_LAYERS) * 0.4;
+      const shade = 0.62 + ((i + 1) / FUR_LAYERS) * 0.55;
       target.set(color).multiplyScalar(shade);
       m.color.lerp(target, k);
     });
   });
   useEffect(() => () => mats.forEach((m) => m.dispose()), [mats]);
+  const geo = useMemo(() => {
+    const g = new THREE.SphereGeometry(radius, 48, 36);
+    if (!countershade) return g;
+    const n = g.attributes.normal as THREE.BufferAttribute;
+    const cols = new Float32Array(n.count * 3);
+    const light = new THREE.Color(1.22, 1.2, 1.02);
+    const dark = new THREE.Color(0.8, 0.84, 0.82);
+    const c = new THREE.Color();
+    for (let i = 0; i < n.count; i++) {
+      const front = Math.max(0, n.getZ(i));
+      const below = Math.max(0, -n.getY(i) + 0.2);
+      const belly = THREE.MathUtils.clamp(front * 0.7 + below * 0.5, 0, 1);
+      const back = THREE.MathUtils.clamp(-n.getZ(i) * 0.6 + n.getY(i) * 0.3, 0, 1);
+      c.setRGB(1, 1, 1).lerp(light, belly * 0.8).lerp(dark, back * 0.7);
+      cols.set([c.r, c.g, c.b], i * 3);
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+    return g;
+  }, [radius, countershade]);
   return (
     <group position={position} scale={scale}>
       {mats.map((m, i) => (
-        <mesh key={i} material={m} scale={1 + (((i + 1) / FUR_LAYERS) * length) / radius} castShadow={i === 0}>
-          <sphereGeometry args={[radius, 48, 36]} />
-        </mesh>
+        <mesh
+          key={i}
+          material={m}
+          // Outer layers sag slightly so the feathers lie downward.
+          geometry={geo}
+          position={[0, -((i + 1) / FUR_LAYERS) * length * droop, 0]}
+          scale={1 + (((i + 1) / FUR_LAYERS) * length) / radius}
+          castShadow={i === 0}
+        />
       ))}
     </group>
   );
@@ -170,11 +191,11 @@ function Beak() {
   return (
     <group>
       <mesh geometry={geo} castShadow>
-        <meshPhysicalMaterial color="#d99a62" roughness={0.45} clearcoat={0.4} clearcoatRoughness={0.4} />
+        <meshPhysicalMaterial color="#d8bf92" roughness={0.45} clearcoat={0.4} clearcoatRoughness={0.4} />
       </mesh>
       <mesh position={[-0.12, 0.92, 1.12]}>
         <sphereGeometry args={[0.016, 8, 8]} />
-        <meshPhysicalMaterial color="#c98850" roughness={0.45} />
+        <meshPhysicalMaterial color="#b89a6a" roughness={0.45} />
       </mesh>
     </group>
   );
@@ -182,10 +203,10 @@ function Beak() {
 
 function Eye({ side }: { side: 1 | -1 }) {
   return (
-    <group position={[side * 0.2, 1.52, 0.53]} rotation={[0, side * 0.38, 0]}>
+    <group position={[side * 0.2, 1.53, 0.57]} rotation={[0, side * 0.38, 0]}>
       <mesh scale={[1, 1.05, 0.55]}>
         <sphereGeometry args={[0.15, 24, 24]} />
-        <meshStandardMaterial color="#e9d2b4" roughness={0.9} />
+        <meshStandardMaterial color="#dfe5c6" roughness={0.9} />
       </mesh>
       <mesh position={[0, 0, 0.03]} scale={[1, 1.05, 0.6]}>
         <sphereGeometry args={[0.13, 32, 32]} />
@@ -207,59 +228,114 @@ function Eye({ side }: { side: 1 | -1 }) {
   );
 }
 
-// Costume pieces worn on the body. Each piece carries a `beat` so an outfit
-// assembles itself piece by piece rather than appearing all at once.
+// Garments are real fabric worn over the feathers. A piece named `drape:n`
+// unrolls from the shoulders on beat n; `beat:n` pieces pop in with a spring.
+const G_R = BODY.r + 0.1; // just outside the feather tips
+const FRONT = Math.PI / 2; // SphereGeometry's phi for the +z (front) direction
+
+function Garment({ color, sheen, theta, phi, r = G_R, bump }: { color: string; sheen: string; theta: [number, number]; phi?: [number, number]; r?: number; bump?: THREE.Texture }) {
+  const [phiStart, phiLength] = phi ?? [0, Math.PI * 2];
+  return (
+    <mesh position={BODY.c} scale={BODY.s} castShadow receiveShadow>
+      <sphereGeometry args={[r, 56, 36, phiStart, phiLength, theta[0] * Math.PI, (theta[1] - theta[0]) * Math.PI]} />
+      <meshPhysicalMaterial color={color} roughness={0.85} sheen={1} sheenColor={sheen} sheenRoughness={0.5} bumpMap={bump} bumpScale={bump ? 2.5 : 0} side={THREE.DoubleSide} />
+    </mesh>
+  );
+}
+
+// Drape pivot: garments unroll downward from the neckline.
+const DRAPE_TOP: V3 = [0, 1.28, 0];
+function Drape({ beat, children }: { beat: number; children: React.ReactNode }) {
+  return (
+    <group name={`drape:${beat}`} position={DRAPE_TOP}>
+      <group position={[-DRAPE_TOP[0], -DRAPE_TOP[1], -DRAPE_TOP[2]]}>{children}</group>
+    </group>
+  );
+}
+
+let knit: THREE.CanvasTexture | null = null;
+function knitTexture() {
+  if (knit) return knit;
+  const c = document.createElement('canvas');
+  c.width = 256;
+  c.height = 256;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, 256, 256);
+  // Rows of little V stitches with a cable every few columns.
+  for (let y = 0; y < 256; y += 8) {
+    for (let x = 0; x < 256; x += 8) {
+      const cable = Math.floor(x / 8) % 6 === 0;
+      ctx.strokeStyle = cable ? '#e0e0e0' : '#b8b8b8';
+      ctx.lineWidth = cable ? 3 : 2;
+      ctx.beginPath();
+      ctx.moveTo(x + 1, y + 1);
+      ctx.lineTo(x + 4, y + 7);
+      ctx.lineTo(x + 7, y + 1);
+      ctx.stroke();
+    }
+  }
+  knit = new THREE.CanvasTexture(c);
+  knit.wrapS = knit.wrapT = THREE.RepeatWrapping;
+  knit.repeat.set(8, 4);
+  return knit;
+}
+
 function BodyPieces({ outfit }: { outfit: Outfit }) {
+  const gap = 0.62; // the jacket's open front
   switch (outfit) {
     case 'suit':
       return (
         <>
-          <mesh position={[0, 1.0, 0.53]} scale={[0.42, 0.34, 0.16]} name="beat:0">
-            <sphereGeometry args={[1, 24, 18]} />
-            <Mat color="#fbf8f2" />
+          <Drape beat={0}>
+            <Garment color="#f6f3ec" sheen="#ffffff" theta={[0.27, 0.72]} phi={[FRONT - 0.42, 0.84]} r={G_R - 0.012} />
+            <Garment color="#2c3a50" sheen="#6d7fa3" theta={[0.28, 0.84]} phi={[FRONT + gap / 2, Math.PI * 2 - gap]} />
+          </Drape>
+          {[-1, 1].map((s) => (
+            <mesh key={s} name="beat:1.5" position={[s * 0.19, 1.0, 0.66]} rotation={[-0.3, s * 0.3, s * 0.42]} castShadow>
+              <boxGeometry args={[0.1, 0.34, 0.025]} />
+              <Mat color="#24314a" rough={0.6} />
+            </mesh>
+          ))}
+          <mesh name="beat:2" position={[0, 1.06, 0.68]} rotation={[0.25, 0, 0]} castShadow>
+            <boxGeometry args={[0.12, 0.09, 0.06]} />
+            <Mat color="#7d2a24" rough={0.5} />
           </mesh>
-          <mesh position={[0, 1.07, 0.7]} rotation={[0.2, 0, 0]} castShadow name="beat:1">
-            <boxGeometry args={[0.13, 0.1, 0.07]} />
-            <Mat color="#8e2a22" />
+          <mesh name="beat:2.3" position={[0, 0.86, 0.72]} rotation={[-0.2, 0, 0]} castShadow>
+            <boxGeometry args={[0.11, 0.33, 0.025]} />
+            <meshPhysicalMaterial color="#9b3128" roughness={0.45} sheen={0.6} sheenColor="#d86a5a" />
           </mesh>
-          <mesh position={[0, 0.86, 0.71]} rotation={[-0.22, 0, 0]} castShadow name="beat:1">
-            <boxGeometry args={[0.12, 0.34, 0.04]} />
-            <Mat color="#a8352b" />
-          </mesh>
-          <mesh position={[0.4, 0.98, 0.49]} rotation={[0, 0.75, 0]} name="beat:2">
-            <boxGeometry args={[0.12, 0.08, 0.02]} />
-            <Mat color="#fbf8f2" />
+          <mesh name="beat:2.8" position={[0.46, 0.99, 0.47]} rotation={[0, 0.8, 0]}>
+            <boxGeometry args={[0.12, 0.07, 0.02]} />
+            <Mat color="#f6f3ec" />
           </mesh>
         </>
       );
     case 'casual':
       return (
         <>
-          <mesh position={[0, 1.1, 0.02]} rotation={[Math.PI / 2 - 0.1, 0, 0]} castShadow name="beat:0">
-            <torusGeometry args={[0.52, 0.08, 12, 40]} />
-            <Mat color="#d6c1a3" rough={1} />
+          <Drape beat={0}>
+            <Garment color="#e4d4ba" sheen="#fff8ea" theta={[0.26, 0.9]} bump={knitTexture()} />
+          </Drape>
+          <mesh name="beat:1.4" position={[0, 1.13, 0.02]} rotation={[Math.PI / 2 - 0.1, 0, 0]} castShadow>
+            <torusGeometry args={[0.52, 0.075, 14, 48]} />
+            <meshPhysicalMaterial color="#d7c5a7" roughness={0.95} sheen={1} sheenColor="#fff8ea" bumpMap={knitTexture()} bumpScale={2} />
           </mesh>
-          {[-0.18, 0, 0.18].map((x, i) => (
-            <mesh key={x} position={[x, 0.78, 0.66 - Math.abs(x) * 0.25]} rotation={[0.15, x * 1.4, 0]} name={`beat:${1 + i * 0.3}`}>
-              <torusGeometry args={[0.06, 0.018, 6, 16]} />
-              <Mat color="#d6c1a3" rough={1} />
-            </mesh>
-          ))}
         </>
       );
     case 'dev':
       return (
         <>
+          <Drape beat={0}>
+            <Garment color="#3b4252" sheen="#7c879c" theta={[0.25, 0.92]} />
+            <Garment color="#343a48" sheen="#6b7486" theta={[0.6, 0.78]} phi={[FRONT - 0.5, 1.0]} r={G_R + 0.012} />
+          </Drape>
           {[-0.1, 0.1].map((x) => (
-            <mesh key={x} position={[x, 0.98, 0.68]} name="beat:1">
-              <cylinderGeometry args={[0.014, 0.014, 0.26, 6]} />
+            <mesh key={x} name="beat:1.8" position={[x, 0.97, 0.73]}>
+              <cylinderGeometry args={[0.013, 0.013, 0.26, 8]} />
               <Mat color="#e8e4dc" />
             </mesh>
           ))}
-          <mesh position={[0, 0.66, 0.64]} rotation={[0.35, 0, 0]} name="beat:2">
-            <boxGeometry args={[0.55, 0.22, 0.05]} />
-            <Mat color="#323a4a" rough={0.95} />
-          </mesh>
         </>
       );
     default:
@@ -360,8 +436,6 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
   const eyes = useRef<THREE.Group>(null);
   const bodyPieces = useRef<THREE.Group>(null);
   const headPieces = useRef<THREE.Group>(null);
-  const bodyMat = useRef<THREE.MeshPhysicalMaterial>(null);
-  const target = useMemo(() => new THREE.Color(), []);
   const tmp = useMemo(() => new THREE.Vector3(), []);
 
   const prevOutfit = useRef(outfit);
@@ -379,8 +453,9 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
     hopAt.current = 'pending';
   }
 
-  useFrame(({ clock }, dt) => {
+  useFrame(({ clock }, frameDt) => {
     const t = clock.elapsedTime;
+    const dt = Math.min(frameDt, 1 / 20);
     if (!rig.current || !body.current || !head.current) return;
 
     // Outfit transformation: a twirl, a spiral of glints, pieces popping in.
@@ -390,6 +465,14 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
     rig.current.rotation.y = tp < 1 ? smooth(tp) * Math.PI * 2 : 0;
     for (const g of [bodyPieces.current, headPieces.current]) {
       g?.traverse((o) => {
+        if (o.name.startsWith('drape:')) {
+          // Unroll from the neckline: height grows first, then width settles.
+          const p = THREE.MathUtils.clamp((tp - 0.25 - parseFloat(o.name.slice(6)) * 0.1) / 0.45, 0, 1);
+          const e = 1 - Math.pow(1 - p, 3);
+          o.scale.set(0.9 + 0.1 * e, Math.max(e, 0.001), 0.9 + 0.1 * e);
+          o.visible = p > 0;
+          return;
+        }
         const beat = o.name.startsWith('beat:') ? parseFloat(o.name.slice(5)) : NaN;
         if (Number.isNaN(beat)) return;
         // Remember each piece's authored scale the first time it is seen.
@@ -423,7 +506,10 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
     const flutter = walking ? Math.sin(t * 13) * 0.12 : 0;
     const sipLift = activity === 'sip' ? Math.max(0, Math.sin(t * 0.8)) * 0.6 : 0;
     wingL.current!.rotation.x = 0.2 + tap + flutter;
-    wingR.current!.rotation.x = 0.2 - tap + flutter - sipLift;
+    wingR.current!.rotation.x = THREE.MathUtils.damp(wingR.current!.rotation.x, 0.2 - tap + flutter - sipLift - (activity === 'beckon' ? 0.9 : 0), 12, dt);
+    // Beckoning: the right wing lifts and waves "this way".
+    const wave = activity === 'beckon' ? -1.05 + Math.sin(t * 7) * 0.35 : -0.25;
+    wingR.current!.rotation.z = THREE.MathUtils.damp(wingR.current!.rotation.z, wave, 10, dt);
 
     // Head: look at what matters, otherwise tilt about curiously.
     let yaw = Math.sin(t * 0.5) * 0.22;
@@ -439,6 +525,7 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
     if (activity === 'type') pitch += 0.12 + (Math.sin(t * 0.6) > 0.85 ? -0.3 : 0);
     if (activity === 'sip') pitch += Math.max(0, Math.sin(t * 0.8)) * 0.35;
     if (activity === 'watch') yaw += Math.sin(t * 2.2) * 0.04;
+    if (activity === 'beckon') roll = Math.sin(t * 3.5) * 0.14;
     head.current.rotation.y = THREE.MathUtils.damp(head.current.rotation.y, yaw, 5, dt);
     head.current.rotation.x = THREE.MathUtils.damp(head.current.rotation.x, pitch, 5, dt);
     head.current.rotation.z = THREE.MathUtils.damp(head.current.rotation.z, roll, 3, dt);
@@ -447,8 +534,6 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
       const blink = t % 3.8 > 3.66 ? 0.1 : 1;
       eyes.current.scale.y = THREE.MathUtils.damp(eyes.current.scale.y, blink, 40, dt);
     }
-    target.set(BODY_COLOR[outfit]);
-    bodyMat.current?.color.lerp(target, 1 - Math.exp(-5 * dt));
   });
 
   return (
@@ -481,16 +566,16 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
         <group ref={body}>
           <mesh position={BODY.c} scale={BODY.s} castShadow>
             <sphereGeometry args={[BODY.r, 40, 32]} />
-            <meshPhysicalMaterial ref={bodyMat} color={FUR} roughness={1} sheen={1} sheenColor={SHEEN} sheenRoughness={0.6} />
+            <meshPhysicalMaterial color="#3f5a26" roughness={1} sheen={1} sheenColor={SHEEN} sheenRoughness={0.6} />
           </mesh>
-          <FurShells radius={BODY.r} position={BODY.c} scale={BODY.s} color={BODY_COLOR[outfit]} length={0.08} ease={5} />
+          <FurShells radius={BODY.r} position={BODY.c} scale={BODY.s} color={FUR} length={0.08} countershade />
           {[
             { ref: wingL, s: -1 },
             { ref: wingR, s: 1 },
           ].map(({ ref, s }) => (
             <mesh key={s} ref={ref} position={[s * 0.58, 0.92, 0.04]} rotation={[0.2, 0, s * -0.25]} scale={[0.35, 0.8, 0.6]} castShadow>
               <sphereGeometry args={[0.3, 20, 16]} />
-              <meshPhysicalMaterial color="#9a6d4a" roughness={1} sheen={1} sheenColor={SHEEN} />
+              <meshPhysicalMaterial color={WING} roughness={1} sheen={1} sheenColor={SHEEN} />
             </mesh>
           ))}
           <group ref={bodyPieces}>
@@ -503,10 +588,9 @@ export default function Kiwi3D({ outfit, walking, pose = 'stand', activity = 'no
             <group position={[-NECK.x, -NECK.y, -NECK.z]}>
               <mesh position={HEAD.c} castShadow>
                 <sphereGeometry args={[HEAD.r, 40, 32]} />
-                <meshPhysicalMaterial color={FUR} roughness={1} sheen={1} sheenColor={SHEEN} sheenRoughness={0.6} />
+                <meshPhysicalMaterial color="#3f5a26" roughness={1} sheen={1} sheenColor={SHEEN} sheenRoughness={0.6} />
               </mesh>
-              <FurShells radius={HEAD.r} position={HEAD.c} color={FUR} length={0.06} />
-              {outfit !== 'casual' && <CrownFuzz />}
+              <FurShells radius={HEAD.r} position={HEAD.c} color={FUR} length={0.045} droop={0.15} countershade />
               <group ref={eyes} position={[0, 1.52, 0]}>
                 <group position={[0, -1.52, 0]}>
                   <Eye side={-1} />

@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber';
 import { RoundedBox } from '@react-three/drei';
 import * as THREE from 'three';
 import type { Activity, Outfit } from './Kiwi3D';
+import type { ExteriorStyle } from './buildings';
 import { seeded, V3 } from './util';
 
 /*
@@ -19,20 +20,24 @@ export interface RoomDef {
   activity: Activity;
   line: string; // something Kivi says, in this persona's voice
   icon: 'office' | 'cafe' | 'dev';
+  exterior: ExteriorStyle;
+  sideColor: string; // interior colour of the wall added on the open side
   position: V3;
   rotation: number;
-  // The rest are in the room's own coordinates (front opening faces +z).
-  entry: V3;
+  // The rest are in the room's own coordinates (the front door faces +z).
+  doorstep: V3; // outside the front door
+  entry: V3; // just inside it
   approach: V3[];
   seat: { position: V3; yaw: number };
   focus: V3; // what Kivi looks at while busy
-  camera: { position: V3; look: V3 };
+  camera: { position: V3; look: V3 }; // inside, once the front has dissolved
+  arrival: { position: V3; look: V3 }; // outside, watching Kivi go in
   Scene: (props: { lit: React.MutableRefObject<number> }) => JSX.Element;
 }
 
 type Lit = { lit: React.MutableRefObject<number> };
 
-function canvasTexture(w: number, h: number, draw: (ctx: CanvasRenderingContext2D) => void, repeat?: [number, number]) {
+export function canvasTexture(w: number, h: number, draw: (ctx: CanvasRenderingContext2D) => void, repeat?: [number, number]) {
   const c = document.createElement('canvas');
   c.width = w;
   c.height = h;
@@ -47,7 +52,7 @@ function canvasTexture(w: number, h: number, draw: (ctx: CanvasRenderingContext2
   return tex;
 }
 
-function woodTexture(base: string, seed: number) {
+export function woodTexture(base: string, seed: number) {
   const rand = seeded(seed);
   return canvasTexture(
     512,
@@ -77,7 +82,7 @@ function woodTexture(base: string, seed: number) {
 }
 
 // Rounded box shorthand: every hard edge in these rooms is softened.
-function B({
+export function B({
   s,
   p,
   r = 0.03,
@@ -109,7 +114,7 @@ function B({
   );
 }
 
-function Cyl({ r, h, p, c, rough = 0.6, metal = 0, rot, top }: { r: number; h: number; p: V3; c: string; rough?: number; metal?: number; rot?: V3; top?: number }) {
+export function Cyl({ r, h, p, c, rough = 0.6, metal = 0, rot, top }: { r: number; h: number; p: V3; c: string; rough?: number; metal?: number; rot?: V3; top?: number }) {
   return (
     <mesh position={p} rotation={rot} castShadow receiveShadow>
       <cylinderGeometry args={[top ?? r, r, h, 32]} />
@@ -129,7 +134,7 @@ function Shell({ wall, side, floor, floorMap }: { wall: string; side: string; fl
   );
 }
 
-function Plant({ p, s = 1, pot = '#c47a5a' }: { p: V3; s?: number; pot?: string }) {
+export function Plant({ p, s = 1, pot = '#c47a5a' }: { p: V3; s?: number; pot?: string }) {
   const leaves = useMemo(() => {
     const rand = seeded(Math.round(p[0] * 100 + p[2] * 7));
     return Array.from({ length: 9 }, (_, i) => ({ a: (i / 9) * Math.PI * 2 + rand() * 0.4, tilt: 0.4 + rand() * 0.5, len: 0.35 + rand() * 0.25 }));
@@ -633,6 +638,10 @@ function DevScene({ lit }: Lit) {
   );
 }
 
+const DOORSTEP: V3 = [0.6, 0, 3.6];
+const THRESHOLD: V3 = [0.6, 0, 1.7];
+const ARRIVAL = { position: [1.6, 1.75, 8.2] as V3, look: [0.6, 1.2, 1.2] as V3 };
+
 export const ROOMS: RoomDef[] = [
   {
     id: 'office',
@@ -643,9 +652,12 @@ export const ROOMS: RoomDef[] = [
     activity: 'type',
     line: 'Could you share the final report by Friday?',
     icon: 'office',
+    exterior: 'office',
+    sideColor: '#e6d9c7',
     position: [-7.8, 0, -1.0],
     rotation: 0.5,
-    entry: [0.8, 0, 3.1],
+    doorstep: DOORSTEP,
+    entry: THRESHOLD,
     approach: [
       [1.7, 0, 0.9],
       [1.55, 0, -1.72],
@@ -653,7 +665,8 @@ export const ROOMS: RoomDef[] = [
     ],
     seat: { position: [0, 0.36, -1.72], yaw: 0 },
     focus: [-0.45, 1.0, -0.9],
-    camera: { position: [1.5, 2.35, 4.1], look: [-0.1, 1.05, -1.3] },
+    camera: { position: [1.45, 2.0, 2.15], look: [-0.25, 1.0, -1.4] },
+    arrival: ARRIVAL,
     Scene: OfficeScene,
   },
   {
@@ -665,9 +678,12 @@ export const ROOMS: RoomDef[] = [
     activity: 'sip',
     line: 'hey! coffee later?',
     icon: 'cafe',
+    exterior: 'cafe',
+    sideColor: '#ead6bd',
     position: [0, 0, -4.6],
     rotation: 0,
-    entry: [0.4, 0, 3.1],
+    doorstep: DOORSTEP,
+    entry: THRESHOLD,
     approach: [
       [0.1, 0, 1.6],
       [-0.75, 0, 0.9],
@@ -675,7 +691,8 @@ export const ROOMS: RoomDef[] = [
     ],
     seat: { position: [-0.55, 0.34, -0.25], yaw: 1.0 },
     focus: [0.08, 0.85, 0.08],
-    camera: { position: [2.4, 2.15, 4.2], look: [-0.1, 1.0, -0.35] },
+    camera: { position: [2.05, 1.95, 2.15], look: [-0.3, 0.95, -0.35] },
+    arrival: ARRIVAL,
     Scene: CafeScene,
   },
   {
@@ -687,9 +704,12 @@ export const ROOMS: RoomDef[] = [
     activity: 'watch',
     line: 'fix: refresh token before it expires',
     icon: 'dev',
+    exterior: 'dev',
+    sideColor: '#262b38',
     position: [7.8, 0, -1.0],
     rotation: -0.5,
-    entry: [0.4, 0, 3.1],
+    doorstep: DOORSTEP,
+    entry: THRESHOLD,
     approach: [
       [0.2, 0, 1.6],
       [-0.9, 0, 0.5],
@@ -697,7 +717,8 @@ export const ROOMS: RoomDef[] = [
     ],
     seat: { position: [-1.38, 0.36, -0.45], yaw: -Math.PI / 2 },
     focus: [-2.5, 1.35, -0.5],
-    camera: { position: [2.1, 2.0, 3.4], look: [-1.5, 1.05, -0.5] },
+    camera: { position: [1.7, 1.95, 2.1], look: [-1.6, 1.05, -0.55] },
+    arrival: ARRIVAL,
     Scene: DevScene,
   },
 ];

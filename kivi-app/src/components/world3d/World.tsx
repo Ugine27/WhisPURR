@@ -60,9 +60,10 @@ function Ground() {
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
       const z = pos.getZ(i);
-      const d = Math.hypot(x, z + 1);
-      // Flat where the rooms stand, gently rolling further out.
-      const rise = THREE.MathUtils.smoothstep(d, 15, 45);
+      // Flat across the village and Kivi's foyer, gently rolling further out.
+      const dx = Math.max(Math.abs(x) - 15, 0);
+      const dz = Math.max(-13 - z, z - 26, 0);
+      const rise = THREE.MathUtils.smoothstep(Math.hypot(dx, dz), 0, 28);
       const hills = Math.sin(x * 0.12) * Math.cos(z * 0.1) * 1.6 + Math.sin(x * 0.05 + z * 0.07) * 2.4;
       pos.setY(i, rise * (hills + rise * 3) - 0.02);
       const n = 0.5 + 0.5 * Math.sin(x * 0.35 + Math.cos(z * 0.3) * 2);
@@ -163,7 +164,7 @@ export default function World() {
   const layout = useMemo(() => {
     const rand = seeded(21);
     const segs = ROOMS.map((r) => {
-      const e = roomToWorld(r, r.entry);
+      const e = roomToWorld(r, r.doorstep);
       return [new THREE.Vector2(PLAZA.x, PLAZA.z), new THREE.Vector2(e.x, e.z)] as const;
     });
     const roomSpots = ROOMS.map((r) => new THREE.Vector2(r.position[0], r.position[2]));
