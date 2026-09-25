@@ -1,8 +1,8 @@
 import { lazy, Suspense, useState } from 'react';
 import KiviWorld from './KiviWorld';
 
-// The 3D island pulls in three.js, so load it only when the Persona page opens.
-const PersonaIsland = lazy(() => import('../personaIsland/PersonaIsland'));
+// Kivi is rendered with three.js, so load the page only when Persona opens.
+const PersonaWorlds = lazy(() => import('../personaWorlds/PersonaWorlds'));
 
 const supportsWebGL = (() => {
   try {
@@ -78,8 +78,8 @@ export default function StylesManager({
   return (
     <div className="w-full h-full flex flex-col relative overflow-hidden">
       {supportsWebGL ? (
-        <Suspense fallback={<div className="w-full h-full rounded-3xl bg-[#f7dcc0]" />}>
-          <PersonaIsland {...worldProps} />
+        <Suspense fallback={<div className="w-full h-full rounded-3xl bg-[#0b100a]" />}>
+          <PersonaWorlds {...worldProps} />
         </Suspense>
       ) : (
         <KiviWorld {...worldProps} />
