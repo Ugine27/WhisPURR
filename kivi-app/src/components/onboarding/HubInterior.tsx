@@ -17,8 +17,6 @@ interface Props {
   size: Size;
   px: MotionValue<number>;
   py: MotionValue<number>;
-  active: boolean;
-  onUse: () => void;
   onBack: () => void;
 }
 
@@ -57,7 +55,7 @@ function Backdrop({ hub, size }: { hub: Hub; size: Size }) {
   );
 }
 
-export default function HubInterior({ hub, size, px, py, active, onUse, onBack }: Props) {
+export default function HubInterior({ hub, size, px, py, onBack }: Props) {
   const kx = useTransform(px, (v) => v * -12);
   const ky = useTransform(py, (v) => v * -6);
   const k = hub.kivi;
@@ -97,7 +95,7 @@ export default function HubInterior({ hub, size, px, py, active, onUse, onBack }
 
       {/* settings card */}
       <div className="absolute left-[4%] top-[12%] bottom-[5%] w-[min(420px,56%)] flex items-center pointer-events-none">
-        <PersonaCard hub={hub} active={active} onUse={onUse} />
+        <PersonaCard hub={hub} />
       </div>
 
       <motion.button

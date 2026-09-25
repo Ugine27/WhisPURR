@@ -78,45 +78,54 @@ export function WorldPlane({ size, children }: { size: Size; children?: React.Re
   );
 }
 
+// A building you can open. The whole footprint is the hit area; the marker
+// floats above the roof, and its label drops in only while hovered or focused.
 function Hotspot({ id, onOpen, index }: { id: HubId; onOpen: (id: HubId) => void; index: number }) {
   const hub = hubById(id);
   const Icon = hub.icon;
+  const { area, pin } = hub;
   return (
-    <motion.button
+    <button
       aria-label={hub.label}
       onClick={(e) => {
         e.stopPropagation();
         onOpen(id);
       }}
-      className="group absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-2 outline-none"
-      style={{ left: `${hub.spot.x}%`, top: `${hub.spot.y}%` }}
-      initial={{ opacity: 0, scale: 0.6 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.6, ease: EASE_OUT, delay: 0.9 + index * 0.12 }}
+      className="group absolute rounded-[40%] outline-none cursor-pointer"
+      style={{ left: `${area.x}%`, top: `${area.y}%`, width: `${area.w}%`, height: `${area.h}%` }}
     >
-      <span className="relative grid place-items-center w-14 h-14">
-        {/* pulse ring */}
-        <motion.span
-          className="absolute inset-0 rounded-full"
-          style={{ boxShadow: `0 0 0 2px ${hub.accent}` }}
-          animate={{ scale: [1, 1.7], opacity: [0.7, 0] }}
-          transition={{ duration: 2.2, repeat: Infinity, ease: 'easeOut', delay: index * 0.4 }}
-        />
-        <span
-          className="relative grid place-items-center w-14 h-14 rounded-full backdrop-blur-md transition-transform duration-300 group-hover:scale-110 group-focus-visible:scale-110"
-          style={{ background: 'rgba(12,18,10,0.45)', boxShadow: `inset 0 0 0 1.5px ${hub.accent}cc, 0 0 32px ${hub.accent}99` }}
-        >
-          <Icon className="w-6 h-6" style={{ color: hub.accent }} strokeWidth={1.8} />
-        </span>
-      </span>
-      <span
-        // Near the right edge the label hangs to the left of the pin so it isn't clipped.
-        className={`absolute top-full mt-2 whitespace-nowrap px-3 py-1 rounded-full text-[12px] font-semibold tracking-wide backdrop-blur-md opacity-80 transition-opacity group-hover:opacity-100 ${hub.spot.x > 78 ? 'right-0' : 'left-1/2 -translate-x-1/2'}`}
-        style={{ background: 'rgba(12,18,10,0.5)', color: '#f1ecd9', fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}
+      {/* the marker, placed in the building's frame so it sits above the roof */}
+      <motion.span
+        className="absolute -translate-x-1/2 -translate-y-1/2 flex flex-col items-center"
+        style={{ left: `${((pin.x - area.x) / area.w) * 100}%`, top: `${((pin.y - area.y) / area.h) * 100}%` }}
+        initial={{ opacity: 0, scale: 0.6 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.6, ease: EASE_OUT, delay: 0.9 + index * 0.12 }}
       >
-        {hub.label}
-      </span>
-    </motion.button>
+        <motion.span className="relative grid place-items-center w-14 h-14" animate={{ y: [0, -4, 0] }} transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut', delay: index * 0.5 }}>
+          {/* pulse ring */}
+          <motion.span
+            className="absolute inset-0 rounded-full"
+            style={{ boxShadow: `0 0 0 2px ${hub.accent}` }}
+            animate={{ scale: [1, 1.7], opacity: [0.7, 0] }}
+            transition={{ duration: 2.2, repeat: Infinity, ease: 'easeOut', delay: index * 0.4 }}
+          />
+          <span
+            className="relative grid place-items-center w-14 h-14 rounded-full backdrop-blur-md transition-transform duration-300 group-hover:scale-110 group-focus-visible:scale-110"
+            style={{ background: 'rgba(12,18,10,0.45)', boxShadow: `inset 0 0 0 1.5px ${hub.accent}cc, 0 0 32px ${hub.accent}99` }}
+          >
+            <Icon className="w-6 h-6" style={{ color: hub.accent }} strokeWidth={1.8} />
+          </span>
+        </motion.span>
+        {/* Label: hidden until hover or focus, then drops in just below the marker. */}
+        <span
+          className={`absolute top-full mt-2 whitespace-nowrap px-3 py-1 rounded-full text-[12px] font-semibold tracking-wide backdrop-blur-md opacity-0 -translate-y-1.5 transition-all duration-300 ease-out group-hover:opacity-100 group-hover:translate-y-0 group-focus-visible:opacity-100 group-focus-visible:translate-y-0 ${pin.x > 78 ? 'right-0' : 'left-1/2 -translate-x-1/2'}`}
+          style={{ background: 'rgba(12,18,10,0.6)', color: '#f1ecd9', fontFamily: 'ui-sans-serif, system-ui, sans-serif' }}
+        >
+          {hub.label}
+        </span>
+      </motion.span>
+    </button>
   );
 }
 

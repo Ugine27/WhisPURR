@@ -18,18 +18,13 @@ import HubInterior from './HubInterior';
 
 type View = { name: 'intro' } | { name: 'world'; from: 'intro' | HubId } | { name: 'hub'; hub: HubId };
 
+// StylesManager passes the active dictation mode; the cards no longer switch it.
 interface Props {
   activeStyleName?: string;
   onSelectActiveStyle?: (mode: string) => void;
 }
 
-const isActive = (hubMode: string, current = '') => {
-  const c = current.toLowerCase();
-  const m = hubMode.toLowerCase();
-  return c === m || (m === 'formal' && c === 'professional') || (m === 'developer' && c === 'technical');
-};
-
-export default function Onboarding({ activeStyleName, onSelectActiveStyle }: Props) {
+export default function Onboarding(_props: Props) {
   const stage = useRef<HTMLDivElement>(null);
   const size = useSize(stage);
   const pointer = usePointer();
@@ -71,8 +66,6 @@ export default function Onboarding({ activeStyleName, onSelectActiveStyle }: Pro
               size={size}
               px={pointer.x}
               py={pointer.y}
-              active={isActive(hubById(view.hub).mode, activeStyleName)}
-              onUse={() => onSelectActiveStyle?.(hubById(view.hub).mode)}
               onBack={back}
             />
           )}
